@@ -8,13 +8,26 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Callable
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-ENV_EXAMPLE = REPO_ROOT / "bridge" / ".env.example"
-SERVICE_FILE = REPO_ROOT / "bridge" / "aquadrone-bridge.service"
+
+
+def _resource_path(*parts: str) -> Path:
+    """Resolve a bundled resource, whether running from source or as a frozen PyInstaller exe.
+
+    PyInstaller's onefile mode extracts data files to a temp dir at sys._MEIPASS
+    at runtime — __file__-relative paths no longer point at the real repo then.
+    """
+    base = Path(getattr(sys, "_MEIPASS", REPO_ROOT))
+    return base.joinpath(*parts)
+
+
+ENV_EXAMPLE = _resource_path("bridge", ".env.example")
+SERVICE_FILE = _resource_path("bridge", "aquadrone-bridge.service")
 INSTALL_DIR = "/opt/aquadrone"
 VENV_DIR = f"{INSTALL_DIR}/.venv"
 SERVICE_NAME = "aquadrone-bridge"

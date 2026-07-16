@@ -1,0 +1,5 @@
+import sys
+from pathlib import Path
+
+# Import the Drone Setup app modules by path, same pattern as tests/bridge.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "app"))

@@ -15,7 +15,7 @@ wherever you see `Drone-<Name>` / `<PI_IP>` below.
 - SSH access to the unit's Raspberry Pi (BlueOS), key-based auth accepted, and an SSH client on PATH (Windows 10/11 ships OpenSSH by default).
 - Physical access to the unit's Pico, to put it into BOOTSEL mode.
 - Access to the caddis-api Django admin.
-- A built firmware file (`build/my_project.uf2`) — see Step 1.
+- A built firmware file (`build/AquaD_Pico_v<version>.uf2`) — see Step 1.
 
 ---
 
@@ -37,7 +37,8 @@ version in caddis-api admin; the next heartbeat overwrites it anyway.
 ./build.sh
 ```
 Auto-fetches the Pico SDK on first run (no more "checkout next to pico-sdk"
-requirement) and produces `build/my_project.uf2`.
+requirement) and produces `build/AquaD_Pico_v<version>.uf2` — the version comes
+from the `VERSION` file, so the artifact name always names what's inside it.
 
 *Windows note:* the Pico SDK's build also needs a native host compiler (for
 helper tools like `pioasm`/`picotool`) in addition to the ARM cross toolchain
@@ -71,8 +72,10 @@ admin → Devices. No need to regenerate unless the old token was compromised.
 ```bash
 python app/main.py
 ```
-In the **1. Flash Pico** section: point it at `build/my_project.uf2` (pre-filled
-if it exists), put the Pico in BOOTSEL mode (hold the white button while
+In the **1. Flash Pico** section: point it at `build/AquaD_Pico_v<version>.uf2`
+(pre-filled with the newest one it finds — in `build/` from source, or beside
+`Drone-Setup.exe` when frozen), put the Pico in BOOTSEL mode (hold the white
+button while
 plugging it in), and click **Flash Pico**. The app copies the firmware over,
 waits for the Pico to reboot, and reads back a few telemetry records over its
 own USB serial to confirm it's actually logging valid data — a PASS/FAIL
@@ -104,7 +107,7 @@ that script previously left manual.
 ## Step 5 — Verify
 
 - **Follow logs**: `ssh pi@<PI_IP> "journalctl -u aquadrone-bridge -f"`
-- **Bridge manual run** — `python3 /opt/aquadrone/bridge/aquadrone_bridge.py`,
+- **Bridge manual run** — `python3 /opt/aquadrone/aquadrone_bridge.py`,
   watch stdout for `Posted: ts=... lat=... lon=...`
 - **SD card contents**:
   ```bash
@@ -126,7 +129,10 @@ that script previously left manual.
 - Firmware build details: [`README.md`](../README.md)
 - Bridge architecture, env vars, hardware setup: [`bridge/README.md`](../bridge/README.md)
 - Install/update automation: [`bridge/deploy.sh`](../bridge/deploy.sh)
-- Systemd unit: [`bridge/aquadrone-bridge.service`](../bridge/aquadrone-bridge.service)
+- Systemd unit: generated at deploy time from the install path (see
+  `install_service` in [`bridge/deploy.sh`](../bridge/deploy.sh) and
+  `_service_unit` in [`app/pi_setup.py`](../app/pi_setup.py)) — installed at
+  `/etc/systemd/system/aquadrone-bridge.service` on the Pi.
 - Drone Setup app: [`app/README.md`](../app/README.md)
 
 ## Not built yet

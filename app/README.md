@@ -12,8 +12,9 @@ python app/main.py
 
 The window has two steps, top to bottom:
 
-1. **Flash Pico** — pick a `.uf2` file (defaults to `build/my_project.uf2` if
-   present), then click **Flash Pico**. Put the Pico in BOOTSEL mode (hold
+1. **Flash Pico** — pick a `.uf2` file (defaults to the newest
+   `AquaD_Pico_v*.uf2` in `build/`, or sitting next to `Drone-Setup.exe`),
+   then click **Flash Pico**. Put the Pico in BOOTSEL mode (hold
    the white button while plugging it in) when prompted in the log. The app
    copies the firmware over, waits for the Pico to reboot, and reads back a
    few telemetry records over serial to confirm it's actually logging data

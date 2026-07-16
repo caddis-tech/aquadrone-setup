@@ -4,6 +4,7 @@ Run with: python app/main.py
 """
 from __future__ import annotations
 
+import sys
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -13,7 +14,27 @@ import flash
 import pi_setup
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_UF2 = REPO_ROOT / "build" / "my_project.uf2"
+
+
+def _default_uf2() -> Path | None:
+    """Where to look for a firmware image by default.
+
+    From source: the repo's build/ output. As a frozen exe: alongside the .exe, so a
+    tech can drop the firmware next to Drone-Setup.exe and have it auto-selected —
+    the source-tree build/ path points into PyInstaller's temp extraction dir when
+    frozen and would never exist.
+
+    The picking itself lives in flash.find_firmware() (and is tested there); this
+    only decides *where* to look."""
+    root = (
+        Path(sys.executable).resolve().parent
+        if getattr(sys, "frozen", False)
+        else REPO_ROOT / "build"
+    )
+    return flash.find_firmware(root)
+
+
+DEFAULT_UF2 = _default_uf2()
 
 
 class DroneSetupApp(tk.Tk):
@@ -23,7 +44,7 @@ class DroneSetupApp(tk.Tk):
         self.geometry("640x680")
         self.minsize(560, 560)
 
-        self.uf2_path = tk.StringVar(value=str(DEFAULT_UF2) if DEFAULT_UF2.exists() else "")
+        self.uf2_path = tk.StringVar(value=str(DEFAULT_UF2) if DEFAULT_UF2 else "")
 
         self._build_flash_section()
         self._build_pi_section()
@@ -57,16 +78,21 @@ class DroneSetupApp(tk.Tk):
 
     def _run_flash(self, uf2: Path):
         try:
-            self._log("Looking for a Pico in BOOTSEL mode (hold the white button while plugging in)...")
-            before_ports = flash.current_serial_ports()
+            self._log(
+                "Looking for a Pico in BOOTSEL mode (hold the white button while plugging in)..."
+            )
             drive = flash.find_bootsel_drive()
             if drive is None:
                 self._log("FAIL: no RPI-RP2 drive found within 30s.")
                 return
+            # Snapshot now, not earlier: the target board is in BOOTSEL at this point
+            # and so has no serial port, meaning every Pico port we can see belongs to
+            # some *other* board. Whatever appears after the flash is ours.
+            before_ports = flash.pico_serial_ports()
             self._log(f"Found BOOTSEL drive at {drive}. Copying firmware...")
             flash.flash_uf2(uf2, drive)
             self._log("Copied. Waiting for the Pico to reboot and reconnect...")
-            port = flash.find_new_serial_port(before_ports)
+            port = flash.find_pico_serial_port(before_ports)
             if port is None:
                 self._log("FAIL: Pico did not reappear as a serial port after flashing.")
                 return
@@ -75,8 +101,12 @@ class DroneSetupApp(tk.Tk):
             for line in result.raw_lines:
                 self._log(f"  {line}")
             if result.ok:
-                self._log(f"PASS — Pico is logging data. Reported firmware_version: {result.firmware_version}")
-                self._log("Reconnect the Pico to the drone's Pi via USB, then continue below.")
+                self._log(
+                    f"PASS — Pico is logging data. firmware_version: {result.firmware_version}"
+                )
+                self._log(
+                    "Reconnect the Pico to the drone's Pi via USB, then continue below."
+                )
             else:
                 self._log(f"FAIL — {result.error}")
         except Exception as exc:  # noqa: BLE001 — surface any failure to the log panel
@@ -91,16 +121,28 @@ class DroneSetupApp(tk.Tk):
 
         self.pi_ip = tk.StringVar()
         self.pi_user = tk.StringVar(value="pi")
+        self.pi_password = tk.StringVar()
         self.drone_name = tk.StringVar()
         self.token = tk.StringVar()
 
         self._labeled_entry(frame, "Pi IP:", self.pi_ip)
         self._labeled_entry(frame, "Pi user:", self.pi_user)
+        self._labeled_entry(frame, "Pi password (optional, one-time):", self.pi_password, show="*")
         self._labeled_entry(frame, "Drone name (Drone-<Name>):", self.drone_name)
         self._labeled_entry(frame, "Token:", self.token, show="*")
 
-        self.deploy_button = ttk.Button(frame, text="Deploy", command=self._start_deploy)
-        self.deploy_button.pack(padx=8, pady=8, anchor="w")
+        btn_row = ttk.Frame(frame)
+        btn_row.pack(fill="x", padx=8, pady=8, anchor="w")
+        self.deploy_button = ttk.Button(btn_row, text="Deploy", command=self._start_deploy)
+        self.deploy_button.pack(side="left")
+        # The common field task is rotating just the token on a drone that's
+        # already provisioned. A full Deploy (git pull + pip + restart) is
+        # overkill for that and regenerates config; this does the minimal,
+        # non-destructive token update instead (needs only Pi IP + token).
+        self.token_button = ttk.Button(
+            btn_row, text="Update Token Only", command=self._start_update_token
+        )
+        self.token_button.pack(side="left", padx=(8, 0))
 
     def _labeled_entry(self, parent, label, var, show=None):
         row = ttk.Frame(parent)
@@ -115,20 +157,55 @@ class DroneSetupApp(tk.Tk):
         if not pi_ip or not drone_name or not token:
             messagebox.showerror("Drone Setup", "Pi IP, drone name, and token are all required.")
             return
-        self.deploy_button.config(state="disabled")
+        self._set_pi_buttons(state="disabled")
         threading.Thread(
             target=self._run_deploy,
-            args=(pi_ip, self.pi_user.get().strip() or "pi", drone_name, token),
+            args=(pi_ip, self.pi_user.get().strip() or "pi", drone_name, token,
+                  self.pi_password.get()),
             daemon=True,
         ).start()
 
-    def _run_deploy(self, pi_ip, pi_user, drone_name, token):
+    def _run_deploy(self, pi_ip, pi_user, drone_name, token, pi_password):
         try:
-            pi_setup.deploy(pi_ip, pi_user, drone_name, token, log=self._log)
+            pi_setup.deploy(
+                pi_ip, pi_user, drone_name, token, log=self._log,
+                pi_password=pi_password or None,
+            )
         except Exception as exc:  # noqa: BLE001
             self._log(f"FAIL — {exc}")
         finally:
-            self.deploy_button.config(state="normal")
+            self._set_pi_buttons(state="normal")
+
+    def _start_update_token(self):
+        pi_ip = self.pi_ip.get().strip()
+        token = self.token.get().strip()
+        # Token rotation needs only the target Pi and the new token — not the
+        # drone name (that's cosmetic) — so validate just those two.
+        if not pi_ip or not token:
+            messagebox.showerror("Drone Setup", "Pi IP and token are required to update the token.")
+            return
+        self._set_pi_buttons(state="disabled")
+        threading.Thread(
+            target=self._run_update_token,
+            args=(pi_ip, self.pi_user.get().strip() or "pi", token, self.pi_password.get()),
+            daemon=True,
+        ).start()
+
+    def _run_update_token(self, pi_ip, pi_user, token, pi_password):
+        try:
+            pi_setup.update_token(
+                pi_ip, pi_user, token, log=self._log, pi_password=pi_password or None
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"FAIL — {exc}")
+        finally:
+            self._set_pi_buttons(state="normal")
+
+    def _set_pi_buttons(self, state):
+        """Enable/disable both Pi-action buttons together so a second action
+        can't start while one is mid-flight over SSH."""
+        self.deploy_button.config(state=state)
+        self.token_button.config(state=state)
 
     # -- Log ---------------------------------------------------------------
     def _build_log_section(self):

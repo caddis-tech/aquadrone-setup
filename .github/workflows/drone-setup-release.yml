@@ -1,0 +1,91 @@
+name: Drone Setup Release
+
+# Builds the Windows-only Drone Setup exe with PyInstaller and publishes it as
+# a GitHub Release asset, so a field tech can grab it directly from
+# /releases/latest -- no repo clone, no Python install. Runs on windows-latest
+# because PyInstaller builds for the OS it runs on; it cannot cross-compile a
+# Windows exe from a Linux runner (see ci.yml / extension.yml, which are
+# Linux-hosted for exactly the opposite reason -- the firmware and Docker
+# image don't need Windows).
+#
+# Builds on every push and PR touching the app (so a broken PyInstaller build
+# is caught in review), but only publishes a release on a push to main -- a
+# PR, especially from a fork, getting GITHUB_TOKEN's contents:write access to
+# mint a public release would be a supply-chain footgun, not a convenience.
+# GitHub already strips that token down to read-only for fork PRs regardless,
+# but the explicit `if` makes the intent obvious without relying on it alone.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "DroneSetup.spec"
+      - "VERSION"
+      - ".github/workflows/drone-setup-release.yml"
+  pull_request:
+    paths:
+      - "app/**"
+      - "DroneSetup.spec"
+      - "VERSION"
+      - ".github/workflows/drone-setup-release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and publish DroneSetup.exe
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          pip install -r app/requirements.txt
+          pip install pyinstaller
+
+      - name: Build exe
+        run: pyinstaller DroneSetup.spec
+
+      # Assert the exact path PyInstaller should produce rather than trusting
+      # its exit code alone -- mirrors how ci.yml verifies the firmware .uf2:
+      # a name drift in DroneSetup.spec should fail loud here, not silently
+      # publish a stale or missing asset.
+      - name: Verify exe output
+        run: |
+          if (-not (Test-Path "dist/DroneSetup.exe")) {
+            Write-Error "PyInstaller did not produce dist/DroneSetup.exe"
+            exit 1
+          }
+
+      - name: Read VERSION
+        id: v
+        run: echo "version=$((Get-Content VERSION -Raw).Trim())" >> $env:GITHUB_OUTPUT
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DroneSetup-exe
+          path: dist/DroneSetup.exe
+
+      - name: Publish GitHub Release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = "${{ steps.v.outputs.version }}"
+          gh release view $version *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $version --title "Drone Setup $version" --notes "Automated build from ${{ github.sha }}."
+          }
+          gh release upload $version dist/DroneSetup.exe --clobber

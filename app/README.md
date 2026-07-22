@@ -1,9 +1,19 @@
 # Drone Setup App
 
-A small local window for flashing a Pico and provisioning its drone's Pi — no
-terminal required. Windows only.
+[![Download DroneSetup.exe](https://img.shields.io/badge/Download-DroneSetup.exe-2ea44f?style=for-the-badge)](https://github.com/caddis-tech/AquadronePicoFirmwareExperimental/releases/latest/download/DroneSetup.exe)
 
-## Running it (today)
+A small local window for flashing a Pico and generating a drone's BlueOS
+Extension settings — no terminal required. Windows only.
+
+## Running it
+
+Download [`DroneSetup.exe`](https://github.com/caddis-tech/AquadronePicoFirmwareExperimental/releases/latest/download/DroneSetup.exe)
+above and run it — no Python required. That link always resolves to the
+latest build, published automatically by
+[`.github/workflows/drone-setup-release.yml`](../.github/workflows/drone-setup-release.yml)
+whenever `app/`, `DroneSetup.spec`, or `VERSION` changes on `main`.
+
+To run from source instead:
 
 ```
 pip install -r app/requirements.txt
@@ -19,19 +29,19 @@ The window has two steps, top to bottom:
    copies the firmware over, waits for the Pico to reboot, and reads back a
    few telemetry records over serial to confirm it's actually logging data
    before calling it a pass.
-2. **Setup Pi** — enter the target Pi's IP, the drone's name (`Drone-<Name>`,
-   e.g. `Drone-DBCooper`), and its caddis-api token (from caddis-api admin →
-   Devices), then click **Deploy**. The app detects whether the bridge is
-   already installed on that Pi and either does a fresh install or an
-   update, then pushes a `.env` built from `bridge/.env.example` with the
-   token filled in — every other value (including `CADDIS_API_URL`) is left
-   at its default, so there's no way to point a drone at anything but prod.
-   Requires an SSH client on PATH (Windows 10/11 ships OpenSSH by default)
-   and key-based SSH auth already set up to the Pi.
+2. **BlueOS Extension Settings** — enter the unit's caddis-api token (from
+   caddis-api admin → Devices), then click **Generate Settings JSON**. The
+   bridge ships as a BlueOS Extension (a Docker image installed via BlueOS's
+   own control panel — see
+   [`bridge/BLUEOS_EXTENSION.md`](../bridge/BLUEOS_EXTENSION.md)), so this app
+   never touches the Pi directly: it builds the ready-to-paste settings JSON
+   (permissions read straight from `bridge/Dockerfile`, plus an `Env` array
+   with the token) and copies it to the clipboard. Paste it, along with the
+   Extension Identifier/Name/image/tag shown above it, into BlueOS →
+   Extensions → INSTALLED → **+**. No SSH, no sudo — Kraken persists the
+   token across restarts and updates.
 
 ## Not built yet (tracked as GitHub issues)
 
-- Packaging this into a double-click `.exe` (PyInstaller) so field techs
-  don't need Python installed.
 - A firmware version picker backed by GitHub Releases (stable/experimental
   channels), proxied through caddis-api.

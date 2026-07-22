@@ -10,8 +10,8 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
+import extension_settings
 import flash
-import pi_setup
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -114,35 +114,51 @@ class DroneSetupApp(tk.Tk):
         finally:
             self.flash_button.config(state="normal")
 
-    # -- 2. Setup Pi -------------------------------------------------------
+    # -- 2. BlueOS Extension Settings ---------------------------------------
     def _build_pi_section(self):
-        frame = ttk.LabelFrame(self, text="2. Setup Pi")
+        frame = ttk.LabelFrame(self, text="2. BlueOS Extension Settings")
         frame.pack(fill="x", padx=10, pady=8)
 
-        self.pi_ip = tk.StringVar()
-        self.pi_user = tk.StringVar(value="pi")
-        self.pi_password = tk.StringVar()
-        self.drone_name = tk.StringVar()
-        self.token = tk.StringVar()
+        # Kraken (BlueOS's Extensions Manager) owns install, update, restart,
+        # and persisting the token — all through BlueOS's own control panel.
+        # Nothing here touches the Pi: these are read-only fields to copy
+        # alongside the generated settings JSON below.
+        for label, value in (
+            ("Extension Identifier:", extension_settings.EXTENSION_IDENTIFIER),
+            ("Extension Name:", extension_settings.EXTENSION_NAME),
+            ("Docker image:", extension_settings.DOCKER_IMAGE),
+            ("Docker tag:", extension_settings.read_version()),
+        ):
+            row = ttk.Frame(frame)
+            row.pack(fill="x", padx=8, pady=2)
+            ttk.Label(row, text=label, width=26).pack(side="left")
+            field = ttk.Entry(row)
+            field.insert(0, value)
+            field.config(state="readonly")
+            field.pack(side="left", fill="x", expand=True)
 
-        self._labeled_entry(frame, "Pi IP:", self.pi_ip)
-        self._labeled_entry(frame, "Pi user:", self.pi_user)
-        self._labeled_entry(frame, "Pi password (optional, one-time):", self.pi_password, show="*")
-        self._labeled_entry(frame, "Drone name (Drone-<Name>):", self.drone_name)
+        self.token = tk.StringVar()
         self._labeled_entry(frame, "Token:", self.token, show="*")
 
-        btn_row = ttk.Frame(frame)
-        btn_row.pack(fill="x", padx=8, pady=8, anchor="w")
-        self.deploy_button = ttk.Button(btn_row, text="Deploy", command=self._start_deploy)
-        self.deploy_button.pack(side="left")
-        # The common field task is rotating just the token on a drone that's
-        # already provisioned. A full Deploy (git pull + pip + restart) is
-        # overkill for that and regenerates config; this does the minimal,
-        # non-destructive token update instead (needs only Pi IP + token).
-        self.token_button = ttk.Button(
-            btn_row, text="Update Token Only", command=self._start_update_token
+        ttk.Label(
+            frame,
+            text=(
+                "Paste all of the above into BlueOS -> Extensions -> "
+                "INSTALLED -> + . No SSH needed — Kraken persists the token "
+                "across restarts and updates."
+            ),
+            wraplength=560,
+            justify="left",
+        ).pack(fill="x", padx=8, pady=(6, 4), anchor="w")
+
+        ttk.Button(
+            frame, text="Generate Settings JSON", command=self._generate_settings
+        ).pack(padx=8, pady=(0, 4), anchor="w")
+
+        self.settings_text = scrolledtext.ScrolledText(
+            frame, height=4, state="disabled", wrap="word"
         )
-        self.token_button.pack(side="left", padx=(8, 0))
+        self.settings_text.pack(fill="x", padx=8, pady=(0, 8))
 
     def _labeled_entry(self, parent, label, var, show=None):
         row = ttk.Frame(parent)
@@ -150,62 +166,25 @@ class DroneSetupApp(tk.Tk):
         ttk.Label(row, text=label, width=26).pack(side="left")
         ttk.Entry(row, textvariable=var, show=show or "").pack(side="left", fill="x", expand=True)
 
-    def _start_deploy(self):
-        pi_ip = self.pi_ip.get().strip()
-        drone_name = self.drone_name.get().strip()
+    def _generate_settings(self):
         token = self.token.get().strip()
-        if not pi_ip or not drone_name or not token:
-            messagebox.showerror("Drone Setup", "Pi IP, drone name, and token are all required.")
+        if not token:
+            messagebox.showerror("Drone Setup", "Token is required.")
             return
-        self._set_pi_buttons(state="disabled")
-        threading.Thread(
-            target=self._run_deploy,
-            args=(pi_ip, self.pi_user.get().strip() or "pi", drone_name, token,
-                  self.pi_password.get()),
-            daemon=True,
-        ).start()
-
-    def _run_deploy(self, pi_ip, pi_user, drone_name, token, pi_password):
         try:
-            pi_setup.deploy(
-                pi_ip, pi_user, drone_name, token, log=self._log,
-                pi_password=pi_password or None,
-            )
-        except Exception as exc:  # noqa: BLE001
-            self._log(f"FAIL — {exc}")
-        finally:
-            self._set_pi_buttons(state="normal")
-
-    def _start_update_token(self):
-        pi_ip = self.pi_ip.get().strip()
-        token = self.token.get().strip()
-        # Token rotation needs only the target Pi and the new token — not the
-        # drone name (that's cosmetic) — so validate just those two.
-        if not pi_ip or not token:
-            messagebox.showerror("Drone Setup", "Pi IP and token are required to update the token.")
+            settings_json = extension_settings.build_install_settings(token)
+        except Exception as exc:  # noqa: BLE001 — a broken bundled Dockerfile, surface it plainly
+            messagebox.showerror("Drone Setup", f"Could not build settings: {exc}")
             return
-        self._set_pi_buttons(state="disabled")
-        threading.Thread(
-            target=self._run_update_token,
-            args=(pi_ip, self.pi_user.get().strip() or "pi", token, self.pi_password.get()),
-            daemon=True,
-        ).start()
 
-    def _run_update_token(self, pi_ip, pi_user, token, pi_password):
-        try:
-            pi_setup.update_token(
-                pi_ip, pi_user, token, log=self._log, pi_password=pi_password or None
-            )
-        except Exception as exc:  # noqa: BLE001
-            self._log(f"FAIL — {exc}")
-        finally:
-            self._set_pi_buttons(state="normal")
+        self.settings_text.config(state="normal")
+        self.settings_text.delete("1.0", "end")
+        self.settings_text.insert("1.0", settings_json)
+        self.settings_text.config(state="disabled")
 
-    def _set_pi_buttons(self, state):
-        """Enable/disable both Pi-action buttons together so a second action
-        can't start while one is mid-flight over SSH."""
-        self.deploy_button.config(state=state)
-        self.token_button.config(state=state)
+        self.clipboard_clear()
+        self.clipboard_append(settings_json)
+        self._log("Settings JSON generated and copied to the clipboard.")
 
     # -- Log ---------------------------------------------------------------
     def _build_log_section(self):

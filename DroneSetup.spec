@@ -13,28 +13,22 @@ import os
 
 ROOT = SPECPATH  # noqa: F821 — injected by PyInstaller
 
-# Everything pi_setup.py ships to the Pi. The systemd unit is deliberately absent:
-# it's generated per-install by _service_unit() so its paths can never drift from
-# INSTALL_DIR.
+# The bridge itself ships as a BlueOS Extension (Docker image via GHCR) —
+# this app never touches a Pi's filesystem. extension_settings.py only reads
+# two local files to build the install settings a tech pastes into BlueOS's
+# control panel: the root VERSION (the Docker tag) and bridge/Dockerfile
+# (the source of truth for the container's permissions LABEL).
 datas = [
-    (os.path.join(ROOT, "bridge", ".env.example"), "bridge"),
-    (os.path.join(ROOT, "bridge", "aquadrone_bridge.py"), "bridge"),
-    (os.path.join(ROOT, "bridge", "requirements.txt"), "bridge"),
-    # VERSION lives at the root, not under bridge/. pi_setup ships it next to the
-    # bridge script on the Pi so the bridge can report firmware_version; without
-    # it bundled here, _resource_path("VERSION") fails in the frozen exe.
     (os.path.join(ROOT, "VERSION"), "."),
+    (os.path.join(ROOT, "bridge", "Dockerfile"), "bridge"),
 ]
 
 a = Analysis(
     [os.path.join(ROOT, "app", "main.py")],
-    pathex=[os.path.join(ROOT, "app")],  # main.py imports flash/pi_setup as siblings
+    pathex=[os.path.join(ROOT, "app")],  # main.py imports flash/extension_settings as siblings
     binaries=[],
     datas=datas,
-    # paramiko is imported lazily inside provision_ssh_key(), and its crypto
-    # backend loads dynamically — name both so the frozen exe can still do the
-    # one-time SSH key bootstrap on a fresh Pi.
-    hiddenimports=["paramiko", "cryptography"],
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

@@ -11,10 +11,10 @@ wherever you see `Drone-<Name>` / `<PI_IP>` below.
 
 ## Prerequisites
 
-- Python 3 with `app/requirements.txt` installed (`pip install -r app/requirements.txt`) — runs the Drone Setup app that does the flashing and Pi provisioning below.
-- SSH access to the unit's Raspberry Pi (BlueOS), key-based auth accepted, and an SSH client on PATH (Windows 10/11 ships OpenSSH by default).
+- Python 3 with `app/requirements.txt` installed (`pip install -r app/requirements.txt`) — runs the Drone Setup app that does the flashing and generates the extension settings below.
 - Physical access to the unit's Pico, to put it into BOOTSEL mode.
 - Access to the caddis-api Django admin.
+- Access to the boat's BlueOS control panel (its web UI) — no SSH needed for anything in this runbook.
 - A built firmware file (`build/AquaD_Pico_v<version>.uf2`) — see Step 1.
 
 ---
@@ -59,11 +59,13 @@ the `CADDIS_API_TOKEN` the bridge sends as `Authorization: Token <...>`.
    convention. Save.
 3. The admin auto-generates an Auth Token — copy it. This is the unit's
    personal token; treat it as a secret and never commit it to the repo. It
-   gets pasted straight into the app in Step 4, not hand-edited into `.env`.
+   gets pasted straight into the app in Step 4, which folds it into the
+   settings JSON you paste into BlueOS — never hand-edited into a file.
 
 **Existing unit (re-flash / redeploy):** its token already exists — reuse the
-value from its current `.env` on the Pi, or look it up again in caddis-api
-admin → Devices. No need to regenerate unless the old token was compromised.
+value from BlueOS's Extensions Manager (the Env field of the installed
+extension's settings) or look it up again in caddis-api admin → Devices. No
+need to regenerate unless the old token was compromised.
 
 ---
 
@@ -86,29 +88,43 @@ See [`app/README.md`](../app/README.md) for details on what the check verifies.
 
 ---
 
-## Step 4 — Deploy or update the Pi bridge
+## Step 4 — Install the extension via BlueOS's control panel
 
-Same app, **2. Setup Pi** section: enter the Pi's IP, the drone name
-(`Drone-<Name>`), and the token from Step 2, then click **Deploy**. It
-detects whether the bridge is already installed on that Pi and does a fresh
-install or an update accordingly, then pushes a `.env` built from
-`bridge/.env.example` with only the token filled in — every other default
-(including `CADDIS_API_URL=https://api.caddistech.com`) passes through
-untouched, so there's no way to point a drone at anything but prod. A fresh
-install finishes with a reboot (required for the `dialout` group change
-before `/dev/ttyACM0` is accessible); an update just restarts the service.
+The bridge ships as a BlueOS Extension: a Docker image that BlueOS's
+Extensions Manager (Kraken) pulls, runs, restarts, and updates — see
+[`bridge/BLUEOS_EXTENSION.md`](../bridge/BLUEOS_EXTENSION.md) for the full
+rationale and reference. Provisioning it, including the token, happens
+entirely through BlueOS's own web UI — no SSH, no sudo:
 
-`bridge/deploy.sh` still works standalone if you'd rather script this from a
-Mac/Linux machine — the app wraps the same steps plus the `.env` templating
-that script previously left manual.
+1. Same app, **2. BlueOS Extension Settings** section: paste in the token
+   from Step 2 and click **Generate Settings JSON**. It's copied to the
+   clipboard automatically (and shown in the box below, to eyeball before
+   pasting). The generated JSON is built from the actual `bridge/Dockerfile`
+   permissions and the current `VERSION`, so it can't drift from what the
+   image really ships with, and the token is baked into its `Env` array —
+   there's no way to point a drone at anything but prod
+   (`CADDIS_API_URL=https://api.caddistech.com` is fixed in it too).
+2. In BlueOS → Extensions → **INSTALLED** → the **+** button, fill in the
+   Extension Identifier / Name / Docker image / Docker tag shown in the app,
+   paste the generated JSON as the settings, and install. It will crash-loop
+   immediately after install — that is expected: Kraken starts the container
+   before anyone could possibly have supplied a token yet, and this JSON
+   already has it, so the very next restart picks it up.
+3. If BlueOS shows the container unhealthy, restart the extension from
+   Extensions Manager — a fresh install occasionally needs one restart to
+   pick up the just-provided Env.
+
+This app never touches the Pi's filesystem — no `/opt/aquadrone`, no systemd,
+no SSH keys. `bridge/deploy.sh` and the old systemd install remain only for a
+boat not yet migrated to the extension; see
+[`bridge/README.md`](../bridge/README.md).
 
 ---
 
 ## Step 5 — Verify
 
-- **Follow logs**: `ssh pi@<PI_IP> "journalctl -u aquadrone-bridge -f"`
-- **Bridge manual run** — `python3 /opt/aquadrone/aquadrone_bridge.py`,
-  watch stdout for `Posted: ts=... lat=... lon=...`
+- **Logs** — BlueOS → Extensions → Aquadrone Bridge → Logs (legacy systemd
+  install only: `ssh pi@<PI_IP> "journalctl -u aquadrone-bridge -f"`)
 - **SD card contents**:
   ```bash
   python3 -c "import json; [json.loads(l) for l in open('/media/sensor_data/session_001.ndjson')]"
@@ -128,16 +144,12 @@ that script previously left manual.
 
 - Firmware build details: [`README.md`](../README.md)
 - Bridge architecture, env vars, hardware setup: [`bridge/README.md`](../bridge/README.md)
-- Install/update automation: [`bridge/deploy.sh`](../bridge/deploy.sh)
-- Systemd unit: generated at deploy time from the install path (see
-  `install_service` in [`bridge/deploy.sh`](../bridge/deploy.sh) and
-  `_service_unit` in [`app/pi_setup.py`](../app/pi_setup.py)) — installed at
-  `/etc/systemd/system/aquadrone-bridge.service` on the Pi.
+- BlueOS Extension install, token provisioning, versioning, rollback:
+  [`bridge/BLUEOS_EXTENSION.md`](../bridge/BLUEOS_EXTENSION.md)
 - Drone Setup app: [`app/README.md`](../app/README.md)
 
 ## Not built yet
 
-- A double-click `.exe` build of the app (currently run via `python app/main.py`).
 - A GitHub-Releases-backed firmware version picker in the app (stable/experimental channels).
 - A maintainer script to cut tagged GitHub Releases with the `.uf2` attached.
 

@@ -16,6 +16,7 @@ from pathlib import Path
 
 import serial
 from serial.tools import list_ports
+from uf2 import HIL_MARKER
 
 BOOTSEL_LABEL = "RPI-RP2"
 BAUD_RATE = 115200
@@ -26,6 +27,11 @@ PICO_USB_VID = 0x2E8A  # Raspberry Pi Trading Ltd — same VID whether in BOOTSE
 # by CMakeLists.txt's OUTPUT_NAME. This glob has to stay in step with that naming:
 # if the two ever drift, the app silently finds no firmware and every tech has to
 # browse for the file by hand. tests/test_release_consistency.py pins them together.
+#
+# Deliberately NOT the same constant as build_manifest.PUBLISHABLE_GLOB, which happens
+# to have the same value today. That one decides what CI is allowed to publish; this
+# one decides what the app auto-selects off a local disk. Two decisions, and a future
+# reason to change one of them should not silently change the other.
 FIRMWARE_GLOB = "AquaD_Pico_v*.uf2"
 
 DRIVE_REMOVABLE = 2
@@ -148,6 +154,18 @@ def evaluate_telemetry(raw_lines: list[str]) -> LoggingCheckResult:
             record = json.loads(text)
         except json.JSONDecodeError:
             continue
+        reported = str(record.get("firmware_version") or "")
+        if HIL_MARKER in reported:
+            # Checked before the key check because this is the more serious answer,
+            # and because a HIL board satisfies every other check here: valid JSON,
+            # every required key, plausible readings. The suffix is the only tell.
+            return LoggingCheckResult(
+                False, reported, raw_lines,
+                f"Test firmware on this board (firmware_version {reported}). This "
+                "build can fake SD card writes, so a drone running it logs nothing "
+                "to the card while looking completely healthy. Flash the image with "
+                "no HIL in its filename, then power-cycle the board.",
+            )
         missing = [k for k in REQUIRED_KEYS if k not in record]
         if missing:
             return LoggingCheckResult(
@@ -160,6 +178,59 @@ def evaluate_telemetry(raw_lines: list[str]) -> LoggingCheckResult:
             False, None, raw_lines, "No valid telemetry JSON seen — only unparseable serial output"
         )
     return LoggingCheckResult(True, firmware_version, raw_lines)
+
+
+# Typing this is what confirms a board is a bench board. A yes/no dialog is one
+# click, and this is exactly the kind of prompt a tech flashing all afternoon stops
+# reading; the failure it guards against is a drone that logs nothing to its card
+# while looking completely healthy, which nobody notices until the data is missing.
+BENCH_CONFIRMATION = "BENCH"
+
+
+def is_bench_confirmation(answer: str | None) -> bool:
+    """True only if the tech actually typed the confirmation word.
+
+    Takes the raw dialog result including None, because None is what Cancel returns
+    and an empty string is what OK-on-an-empty-box returns. Treating either as
+    consent would defeat the entire gate, and they are easy to conflate.
+
+    Case and surrounding whitespace are forgiven. Typing the word at all is the
+    deliberate act; demanding capitals adds friction without adding intent.
+    """
+    if answer is None:
+        return False
+    return answer.strip().casefold() == BENCH_CONFIRMATION.casefold()
+
+
+def describe_outcome(
+    result: LoggingCheckResult, flashed_test_firmware: bool
+) -> tuple[bool, str]:
+    """How to report a finished flash: (it went as intended, what to tell the tech).
+
+    evaluate_telemetry() above answers exactly one question, "is this drone ready for
+    the field", and a board running the test build is not, however it got there. That
+    verdict does not change here.
+
+    What changes is who is being told. A tech who deliberately confirmed flashing the
+    test image onto a bench board did precisely what they meant to, and reporting FAIL
+    and telling them to go flash production firmware is both wrong and the opposite of
+    what they want. The same result reached by accident still needs the original
+    warning, so the two cases are distinguished by whether the tech was asked and
+    said yes, not by anything the board reports.
+
+    Pure, so the wording of both cases is testable without a Pico.
+    """
+    if result.ok:
+        return True, f"PASS - Pico is logging data. firmware_version: {result.firmware_version}"
+
+    if flashed_test_firmware and HIL_MARKER in (result.firmware_version or ""):
+        return True, (
+            f"Bench test firmware is running and logging. firmware_version: "
+            f"{result.firmware_version}. This board must NOT be deployed. Drive it "
+            "with the hardware tests in tests/hil."
+        )
+
+    return False, f"FAIL - {result.error}"
 
 
 def verify_logging_data(

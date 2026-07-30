@@ -74,9 +74,17 @@ need to regenerate unless the old token was compromised.
 ```bash
 python app/main.py
 ```
-In the **1. Flash Pico** section: point it at `build/AquaD_Pico_v<version>.uf2`
-(pre-filled with the newest one it finds — in `build/` from source, or beside
-`Drone-Setup.exe` when frozen), put the Pico in BOOTSEL mode (hold the white
+In the **1. Flash Pico** section, get a `.uf2` one of two ways:
+
+- **Download a published build.** Leave Channel on `stable`, click **Fetch
+  versions**, pick one, click **Download**. The app checks the signature on the
+  version list and the checksum of the file before it will flash anything. This
+  needs no login. See [`app/README.md`](../app/README.md) for what it verifies.
+- **Use a local file.** The field is pre-filled with the newest one it finds (in
+  `build/` from source, or beside `DroneSetup.exe` when frozen), and
+  **Load .uf2 file...** browses for another. This works with no network.
+
+Then put the Pico in BOOTSEL mode (hold the white
 button while
 plugging it in), and click **Flash Pico**. The app copies the firmware over,
 waits for the Pico to reboot, and reads back a few telemetry records over its
@@ -85,6 +93,18 @@ shows in the log pane before you move on. Once it passes, reconnect the Pico
 to the unit's Pi via USB.
 
 See [`app/README.md`](../app/README.md) for details on what the check verifies.
+
+**If a "Bench test firmware" warning appears, stop and pick a different file.** It
+means the selected `.uf2` is the hardware test image, which can be commanded to fake
+SD card writes: a drone running it streams normal-looking telemetry while recording
+nothing to the card. The file you want has no `HIL` in its name. The app checks the
+file's contents rather than its name, so the warning is right even if the filename
+looks correct. Answering "yes" is only ever for a bench board.
+
+**Power-cycle the Pico after flashing, before the unit goes out.** The first boot
+after any flash holds the SD card off for 10 minutes; unplugging and replugging
+clears it. See [`docs/firmware-build.md`](firmware-build.md) and entry seven in
+[`docs/regressions.md`](regressions.md).
 
 ---
 
@@ -148,9 +168,15 @@ boat not yet migrated to the extension; see
   [`bridge/BLUEOS_EXTENSION.md`](../bridge/BLUEOS_EXTENSION.md)
 - Drone Setup app: [`app/README.md`](../app/README.md)
 
-## Not built yet
+## Publishing a new firmware version
 
-- A GitHub-Releases-backed firmware version picker in the app (stable/experimental channels).
-- A maintainer script to cut tagged GitHub Releases with the `.uf2` attached.
+Bump `VERSION` on `main` and CI does the rest: builds the production image, attaches
+it to a release in the public `caddis-tech/aquadrone-pico-firmware` repo, and updates
+the signed manifest the app reads. Nothing is published from a laptop.
 
-Tracked as GitHub issues in this repo.
+For a prerelease build, run the **Publish firmware** workflow manually and choose the
+`experimental` channel. That is still a production image; it just is not blessed for
+the fleet yet. The hardware test (HIL) image is never published to either channel.
+
+See [`.github/workflows/firmware-publish.yml`](../.github/workflows/firmware-publish.yml)
+and [`docs/firmware-build.md`](firmware-build.md).

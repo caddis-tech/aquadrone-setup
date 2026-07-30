@@ -23,6 +23,12 @@ datas = [
     (os.path.join(ROOT, "bridge", "Dockerfile"), "bridge"),
 ]
 
+# hiddenimports stays empty on purpose, including for cryptography, which the version
+# picker uses to check the signature on the published firmware list. PyInstaller ships
+# no hook for it, so it looked like it would need one -- it doesn't. Verified against
+# 6.17 / cryptography 47: the analysis picks up the 33 pure-Python modules (ed25519
+# among them) and cryptography\hazmat\bindings\_rust.pyd, which is where the actual
+# signature verification happens.
 a = Analysis(
     [os.path.join(ROOT, "app", "main.py")],
     pathex=[os.path.join(ROOT, "app")],  # main.py imports flash/extension_settings as siblings

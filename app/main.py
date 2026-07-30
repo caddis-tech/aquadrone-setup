@@ -8,12 +8,19 @@ import sys
 import threading
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, scrolledtext, ttk
+from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
 
 import extension_settings
+import firmware_manifest
 import flash
+from uf2 import is_test_firmware
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# Downloaded firmware lands in the tech's own profile rather than beside the exe.
+# DroneSetup.exe often sits somewhere unwritable (Program Files, a read-only share),
+# and "the download failed" is a confusing way to find that out mid-job.
+DOWNLOAD_DIR = Path.home() / ".aquadrone" / "firmware"
 
 
 def _default_uf2() -> Path | None:
@@ -41,10 +48,14 @@ class DroneSetupApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Drone Setup")
-        self.geometry("640x680")
-        self.minsize(560, 560)
+        self.geometry("640x760")
+        self.minsize(560, 620)
 
         self.uf2_path = tk.StringVar(value=str(DEFAULT_UF2) if DEFAULT_UF2 else "")
+        self.channel = tk.StringVar(value=firmware_manifest.CHANNEL_STABLE)
+        self.selected_version = tk.StringVar()
+        self._builds: dict[str, firmware_manifest.Build] = {}
+        self._progress_decile = -1
 
         self._build_flash_section()
         self._build_pi_section()
@@ -56,7 +67,34 @@ class DroneSetupApp(tk.Tk):
         frame.pack(fill="x", padx=10, pady=8)
 
         row = ttk.Frame(frame)
-        row.pack(fill="x", padx=8, pady=6)
+        row.pack(fill="x", padx=8, pady=(6, 2))
+        ttk.Label(row, text="Channel:", width=10).pack(side="left")
+        ttk.Combobox(
+            row,
+            textvariable=self.channel,
+            values=list(firmware_manifest.CHANNELS),
+            state="readonly",
+            width=14,
+        ).pack(side="left")
+        self.fetch_button = ttk.Button(
+            row, text="Fetch versions", command=self._start_fetch_versions
+        )
+        self.fetch_button.pack(side="left", padx=6)
+
+        row = ttk.Frame(frame)
+        row.pack(fill="x", padx=8, pady=2)
+        ttk.Label(row, text="Version:", width=10).pack(side="left")
+        self.version_box = ttk.Combobox(
+            row, textvariable=self.selected_version, values=[], state="disabled", width=24
+        )
+        self.version_box.pack(side="left")
+        self.download_button = ttk.Button(
+            row, text="Download", command=self._start_download, state="disabled"
+        )
+        self.download_button.pack(side="left", padx=6)
+
+        row = ttk.Frame(frame)
+        row.pack(fill="x", padx=8, pady=(6, 6))
         ttk.Entry(row, textvariable=self.uf2_path).pack(side="left", fill="x", expand=True)
         ttk.Button(row, text="Load .uf2 file...", command=self._pick_uf2).pack(side="left", padx=6)
 
@@ -68,15 +106,188 @@ class DroneSetupApp(tk.Tk):
         if path:
             self.uf2_path.set(path)
 
+    # -- Published firmware ------------------------------------------------
+    #
+    # Everything below runs its network work on a worker thread and touches widgets
+    # only via self.after(), the same way _log does. Tk is not thread-safe, and a
+    # widget updated straight from a worker fails intermittently rather than loudly.
+
+    def _start_fetch_versions(self):
+        channel = self.channel.get()
+        self.fetch_button.config(state="disabled")
+        self._log(f"Fetching published {channel} firmware versions...")
+        threading.Thread(target=self._fetch_versions, args=(channel,), daemon=True).start()
+
+    def _fetch_versions(self, channel: str):
+        try:
+            builds = firmware_manifest.load_builds(channel)
+        except firmware_manifest.ManifestError as exc:
+            self._log(f"FAIL - {exc}")
+            builds = None
+        except Exception as exc:  # noqa: BLE001 — surface any failure to the log panel
+            self._log(f"FAIL - unexpected error fetching versions: {exc}")
+            builds = None
+        self.after(0, self._show_versions, channel, builds)
+
+    def _show_versions(self, channel, builds):
+        self.fetch_button.config(state="normal")
+        if builds is None:
+            # The failure is already in the log with its reason. Saying anything else
+            # here would only bury it.
+            return
+
+        self._builds = {build.label: build for build in builds}
+        labels = list(self._builds)
+        self.version_box.config(values=labels, state="readonly" if labels else "disabled")
+        self.download_button.config(state="normal" if labels else "disabled")
+        self.selected_version.set(labels[0] if labels else "")
+        if labels:
+            self._log(f"{len(labels)} {channel} build(s) published. Newest: {labels[0]}")
+        else:
+            self._log(f"No {channel} builds have been published yet.")
+
+    def _start_download(self):
+        build = self._builds.get(self.selected_version.get())
+        if build is None:
+            messagebox.showerror("Drone Setup", "Pick a version first.")
+            return
+        self.fetch_button.config(state="disabled")
+        self.download_button.config(state="disabled")
+        self._progress_decile = -1
+        self._log(f"Downloading {build.version} ({build.channel}) from {build.url}")
+        threading.Thread(target=self._download, args=(build,), daemon=True).start()
+
+    def _log_progress(self, received: int, total: int):
+        """Log at each 10% mark. A line per 64KB chunk would drown the panel."""
+        if total <= 0:
+            return
+        decile = received * 10 // total
+        if decile != self._progress_decile:
+            self._progress_decile = decile
+            self._log(f"  {received * 100 // total}% ({received} of {total} bytes)")
+
+    def _download(self, build: firmware_manifest.Build):
+        try:
+            path = firmware_manifest.download_build(
+                build, DOWNLOAD_DIR, progress_cb=self._log_progress
+            )
+        except firmware_manifest.ManifestError as exc:
+            self._log(f"FAIL - {exc}")
+            self.after(0, self._download_finished, None)
+            return
+        except Exception as exc:  # noqa: BLE001 — surface any failure to the log panel
+            self._log(f"FAIL - unexpected error downloading firmware: {exc}")
+            self.after(0, self._download_finished, None)
+            return
+
+        # The last publishing guardrail, and the only one that runs on the tech's
+        # machine. Unlike a file they browsed to, this is not a question: the test
+        # image is published to no channel, so one arriving here has been signed by
+        # our own key, which means the publishing pipeline itself is wrong. Flashing
+        # it would be the worst possible way to find that out.
+        #
+        # Renamed rather than deleted. This file is the evidence of a serious failure
+        # and throwing it away would leave nothing to investigate, but leaving a
+        # flashable .uf2 sitting there is its own hazard. The new extension keeps it
+        # out of the file dialog's filter and out of every .uf2 glob we have. Getting
+        # the test image on purpose is unaffected: it is not downloadable at all, so
+        # this is never the path a bench flash takes.
+        try:
+            if is_test_firmware(path):
+                quarantined = path.with_name(path.name + ".rejected")
+                path.replace(quarantined)
+                self._log(
+                    "FAIL - the downloaded image is the hardware TEST build, which "
+                    "fakes SD card writes. Nothing was flashed."
+                )
+                self._log(
+                    f"  Kept for investigation at {quarantined}, renamed so it cannot "
+                    "be flashed by accident."
+                )
+                self._log(
+                    "  Report this: the release channel must never carry that image, "
+                    "so something is wrong with publishing, not with this laptop."
+                )
+                self.after(0, self._download_finished, None)
+                return
+        except OSError as exc:
+            self._log(f"FAIL - could not check what kind of firmware was downloaded: {exc}")
+            self.after(0, self._download_finished, None)
+            return
+
+        self._log(f"Verified against the signed checksum. Saved to {path}")
+        self.after(0, self._download_finished, path)
+
+    def _download_finished(self, path):
+        self.fetch_button.config(state="normal")
+        self.download_button.config(state="normal")
+        if path is not None:
+            self.uf2_path.set(str(path))
+
     def _start_flash(self):
         uf2 = Path(self.uf2_path.get())
         if not uf2.exists():
             messagebox.showerror("Drone Setup", f"File not found: {uf2}")
             return
-        self.flash_button.config(state="disabled")
-        threading.Thread(target=self._run_flash, args=(uf2,), daemon=True).start()
 
-    def _run_flash(self, uf2: Path):
+        try:
+            flashing_test_firmware = is_test_firmware(uf2)
+        except OSError as exc:
+            # Could not run the check. Not the same as passing it, so stop rather than
+            # flash something we were unable to identify.
+            messagebox.showerror(
+                "Drone Setup",
+                f"Could not read {uf2.name} to check what kind of firmware it is:\n\n"
+                f"{exc}\n\nNothing was flashed.",
+            )
+            return
+
+        if flashing_test_firmware and not self._confirm_test_firmware(uf2):
+            return
+
+        self.flash_button.config(state="disabled")
+        threading.Thread(
+            target=self._run_flash, args=(uf2, flashing_test_firmware), daemon=True
+        ).start()
+
+    def _confirm_test_firmware(self, uf2: Path) -> bool:
+        """Ask before writing the bench test image. True if flashing should proceed.
+
+        Catching this before the flash rather than after is the point. The post-flash
+        check still refuses to call it a good production flash, but by then the wrong
+        firmware is already on the board and someone has to notice and redo it.
+
+        Deliberately a question and not a refusal: flashing the HIL image onto a bench
+        board is a normal, expected thing to do, and it is why the image exists. The
+        answer is carried through to _run_flash so a confirmed flash is reported as
+        the success it is rather than as a failure.
+
+        Typed rather than clicked. Yes/no is one keystroke, and this is exactly the
+        prompt somebody flashing boards all afternoon stops reading. What it guards
+        against is a drone that logs nothing to its card while reporting perfectly
+        healthy telemetry, which nobody catches until the data is missing.
+        """
+        self._log(f"WARNING: {uf2.name} is the hardware test (HIL) firmware.")
+        answer = simpledialog.askstring(
+            "Bench test firmware",
+            f"{uf2.name} is the hardware TEST firmware, not drone firmware.\n\n"
+            "It can be told to fake SD card writes. A drone carrying it sends "
+            "telemetry that looks completely normal while nothing at all is recorded "
+            "to the card, so the loss is invisible until someone goes looking for "
+            "the data.\n\n"
+            "Only flash this on a bench board you are testing. Never on a drone that "
+            "is going out.\n\n"
+            f"If this is a bench board, type {flash.BENCH_CONFIRMATION} to confirm:",
+            parent=self,
+        )
+        if not flash.is_bench_confirmation(answer):
+            self._log("Not confirmed. Nothing was flashed.")
+            return False
+
+        self._log(f"Confirmed as a bench board. Flashing {uf2.name}.")
+        return True
+
+    def _run_flash(self, uf2: Path, flashing_test_firmware: bool = False):
         try:
             self._log(
                 "Looking for a Pico in BOOTSEL mode (hold the white button while plugging in)..."
@@ -100,15 +311,14 @@ class DroneSetupApp(tk.Tk):
             result = flash.verify_logging_data(port)
             for line in result.raw_lines:
                 self._log(f"  {line}")
-            if result.ok:
-                self._log(
-                    f"PASS — Pico is logging data. firmware_version: {result.firmware_version}"
-                )
+            went_as_intended, message = flash.describe_outcome(result, flashing_test_firmware)
+            self._log(message)
+            if went_as_intended and not flashing_test_firmware:
+                # Only a production board goes on to step 2. A bench board stays on
+                # the bench, so pointing it at a drone's Pi would be the wrong advice.
                 self._log(
                     "Reconnect the Pico to the drone's Pi via USB, then continue below."
                 )
-            else:
-                self._log(f"FAIL — {result.error}")
         except Exception as exc:  # noqa: BLE001 — surface any failure to the log panel
             self._log(f"FAIL — unexpected error: {exc}")
         finally:

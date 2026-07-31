@@ -40,7 +40,9 @@ concurrency:
 
 jobs:
   build:
-    name: Build and publish DroneSetup.exe
+    # A pull request only builds. The job name is the first thing you see on a PR,
+    # and "and publish" reads as though something shipped.
+    name: ${{ github.event_name == 'pull_request' && 'Build DroneSetup.exe' || 'Build and publish DroneSetup.exe' }}
     runs-on: windows-latest
     steps:
       # inputs.ref is empty on a pull request, which checkout reads as "use the

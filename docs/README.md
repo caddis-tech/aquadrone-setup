@@ -170,13 +170,15 @@ boat not yet migrated to the extension; see
 
 ## Publishing a new firmware version
 
-Bump `VERSION` on `main` and CI does the rest: builds the production image, attaches
+Run the **Release** workflow from the Actions tab: pick `patch`, `minor` or `major`,
+tick **firmware**, press Run. It bumps `VERSION`, builds the production image, attaches
 it to a release in the public `caddis-tech/aquadrone-pico-firmware` repo, and updates
-the signed manifest the app reads. Nothing is published from a laptop.
+the signed manifest the app reads. Nothing is published from a laptop, and merging a PR
+publishes nothing at all.
 
-For a prerelease build, run the **Publish firmware** workflow manually and choose the
-`experimental` channel. That is still a production image; it just is not blessed for
-the fleet yet. The hardware test (HIL) image is never published to either channel.
+Choose the `experimental` channel for a prerelease build. That is still a production
+image; it just is not blessed for the fleet yet. The hardware test (HIL) image is never
+published to either channel.
 
-See [`.github/workflows/firmware-publish.yml`](../.github/workflows/firmware-publish.yml)
-and [`docs/firmware-build.md`](firmware-build.md).
+See [`.github/workflows/release.yml`](../.github/workflows/release.yml) and
+[`docs/firmware-build.md`](firmware-build.md).

@@ -9,25 +9,31 @@ name: Drone Setup Release
 # image don't need Windows).
 #
 # Builds on every PR touching the app (so a broken PyInstaller build is caught
-# in review), but only publishes when release.yml calls it -- a PR, especially
-# from a fork, getting GITHUB_TOKEN's contents:write access to mint a public
-# release would be a supply-chain footgun, not a convenience. GitHub already
-# strips that token down to read-only for fork PRs regardless, but the explicit
-# `if` makes the intent obvious without relying on it alone.
+# in review), but only publishes from main -- a PR, especially from a fork,
+# getting GITHUB_TOKEN's contents:write access to mint a public release would be
+# a supply-chain footgun, not a convenience. GitHub already strips that token
+# down to read-only for fork PRs regardless, but the explicit `if` on the
+# publish step makes the intent obvious without relying on it alone.
+#
+# The release is named from VERSION and the create step is skipped when that tag
+# already exists, so an ordinary merge re-uploads the asset and only a VERSION
+# bump mints a new release.
 
 on:
-  workflow_call:
-    inputs:
-      ref:
-        description: "Commit to build and publish. release.yml passes the version bump it just made."
-        type: string
-        required: true
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "DroneSetup.spec"
+      - "VERSION"
+      - ".github/workflows/drone-setup-release.yml"
   pull_request:
     paths:
       - "app/**"
       - "DroneSetup.spec"
       - "VERSION"
       - ".github/workflows/drone-setup-release.yml"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -45,11 +51,7 @@ jobs:
     name: ${{ github.event_name == 'pull_request' && 'Build DroneSetup.exe' || 'Build and publish DroneSetup.exe' }}
     runs-on: windows-latest
     steps:
-      # inputs.ref is empty on a pull request, which checkout reads as "use the
-      # default", so one line covers both entry points.
       - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.ref }}
 
       - uses: actions/setup-python@v7
         with:
@@ -92,6 +94,6 @@ jobs:
           $version = "${{ steps.v.outputs.version }}"
           gh release view $version *> $null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $version --title "Drone Setup $version" --notes "Automated build from ${{ inputs.ref }}."
+            gh release create $version --title "Drone Setup $version" --notes "Automated build from ${{ github.sha }}."
           }
           gh release upload $version dist/DroneSetup.exe --clobber

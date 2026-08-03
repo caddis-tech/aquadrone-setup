@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:  # pragma: no cover - import exists for the annotation only
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-FIRMWARE_REPO = "caddis-tech/aquadrone-pico-firmware"
+FIRMWARE_REPO = "caddis-tech/aquadrone-firmware-releases"
 MANIFEST_URL = f"https://raw.githubusercontent.com/{FIRMWARE_REPO}/main/manifest.json"
 SIGNATURE_URL = f"{MANIFEST_URL}.sig"
 RELEASE_URL_PREFIX = f"https://github.com/{FIRMWARE_REPO}/releases/download/"

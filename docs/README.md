@@ -112,7 +112,7 @@ clears it. See [`docs/firmware-build.md`](firmware-build.md) and entry seven in
 
 The bridge ships as a BlueOS Extension: a Docker image that BlueOS's
 Extensions Manager (Kraken) pulls, runs, restarts, and updates — see
-[`bridge/BLUEOS_EXTENSION.md`](../bridge/BLUEOS_EXTENSION.md) for the full
+[`bridge/BLUEOS_EXTENSION.md`](https://github.com/caddis-tech/AquadronePicoFirmwareExperimental/blob/main/bridge/BLUEOS_EXTENSION.md) for the full
 rationale and reference. Provisioning it, including the token, happens
 entirely through BlueOS's own web UI — no SSH, no sudo:
 
@@ -137,7 +137,7 @@ entirely through BlueOS's own web UI — no SSH, no sudo:
 This app never touches the Pi's filesystem — no `/opt/aquadrone`, no systemd,
 no SSH keys. `bridge/deploy.sh` and the old systemd install remain only for a
 boat not yet migrated to the extension; see
-[`bridge/README.md`](../bridge/README.md).
+[`bridge/README.md`](https://github.com/caddis-tech/AquadronePicoFirmwareExperimental/blob/main/bridge/README.md).
 
 ---
 
@@ -163,9 +163,9 @@ boat not yet migrated to the extension; see
 ## Reference
 
 - Firmware build details: [`README.md`](../README.md)
-- Bridge architecture, env vars, hardware setup: [`bridge/README.md`](../bridge/README.md)
+- Bridge architecture, env vars, hardware setup: [`bridge/README.md`](https://github.com/caddis-tech/AquadronePicoFirmwareExperimental/blob/main/bridge/README.md)
 - BlueOS Extension install, token provisioning, versioning, rollback:
-  [`bridge/BLUEOS_EXTENSION.md`](../bridge/BLUEOS_EXTENSION.md)
+  [`bridge/BLUEOS_EXTENSION.md`](https://github.com/caddis-tech/AquadronePicoFirmwareExperimental/blob/main/bridge/BLUEOS_EXTENSION.md)
 - Drone Setup app: [`app/README.md`](../app/README.md)
 
 ## Publishing a new firmware version
@@ -180,5 +180,5 @@ Choose the `experimental` channel for a prerelease build. That is still a produc
 image; it just is not blessed for the fleet yet. The hardware test (HIL) image is never
 published to either channel.
 
-See [`.github/workflows/release.yml`](../.github/workflows/release.yml) and
+See [`.github/workflows/release.yml`](https://github.com/caddis-tech/AquadronePicoFirmwareExperimental/blob/main/.github/workflows/release.yml) and
 [`docs/firmware-build.md`](firmware-build.md).

@@ -1,0 +1,22 @@
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+# E/W: pycodestyle  F: pyflakes  I: isort  UP: pyupgrade
+select = ["E", "F", "W", "I", "UP"]
+
+[tool.ruff.lint.isort]
+# app/ is a directory of plain modules, not an installed package, so isort has
+# no import name to infer first-party status from. Naming them keeps `import
+# flash` sorted with our own code rather than with third-party packages.
+known-first-party = ["extension_settings", "firmware_manifest", "flash", "uf2"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+warn_return_any = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,17 +1,18 @@
 # Drone Setup App
 
-[![Download DroneSetup.exe](https://img.shields.io/badge/Download-DroneSetup.exe-2ea44f?style=for-the-badge)](https://github.com/caddis-tech/AquadronePicoFirmwareExperimental/releases/latest/download/DroneSetup.exe)
+[![Download DroneSetup.exe](https://img.shields.io/badge/Download-DroneSetup.exe-2ea44f?style=for-the-badge)](https://github.com/caddis-tech/aquadrone-setup/releases/latest/download/DroneSetup.exe)
 
 A small local window for flashing a Pico and generating a drone's BlueOS
 Extension settings — no terminal required. Windows only.
 
 ## Running it
 
-Download [`DroneSetup.exe`](https://github.com/caddis-tech/AquadronePicoFirmwareExperimental/releases/latest/download/DroneSetup.exe)
+Download [`DroneSetup.exe`](https://github.com/caddis-tech/aquadrone-setup/releases/latest/download/DroneSetup.exe)
 above and run it — no Python required. That link always resolves to the
 latest build, published automatically by
 [`.github/workflows/drone-setup-release.yml`](../.github/workflows/drone-setup-release.yml)
-whenever `app/`, `DroneSetup.spec`, or `VERSION` changes on `main`.
+whenever `app/`, `DroneSetup.spec`, or `VERSION` changes on `main`. The release
+is named from `VERSION`, so bumping that file is what mints a new one.
 
 To run from source instead:
 
@@ -40,8 +41,8 @@ The window has two steps, top to bottom:
 2. **BlueOS Extension Settings** — enter the unit's caddis-api token (from
    caddis-api admin → Devices), then click **Generate Settings JSON**. The
    bridge ships as a BlueOS Extension (a Docker image installed via BlueOS's
-   own control panel — see
-   [`bridge/BLUEOS_EXTENSION.md`](../bridge/BLUEOS_EXTENSION.md)), so this app
+   own control panel — see [`bridge/BLUEOS_EXTENSION.md`][bridge-docs] in the
+   internal firmware repo), so this app
    never touches the Pi directly: it builds the ready-to-paste settings JSON
    (permissions read straight from `bridge/Dockerfile`, plus an `Env` array
    with the token) and copies it to the clipboard. Paste it, along with the
@@ -51,10 +52,11 @@ The window has two steps, top to bottom:
 
 ## Downloading firmware
 
-Published firmware lives in a second, public repo,
-[`caddis-tech/aquadrone-pico-firmware`](https://github.com/caddis-tech/aquadrone-pico-firmware).
-Only compiled `.uf2` files and a manifest listing them go there. Source, docs and
-history stay in this repo.
+Published firmware lives in a separate public repo,
+[`caddis-tech/aquadrone-firmware-releases`](https://github.com/caddis-tech/aquadrone-firmware-releases).
+Only compiled `.uf2` files and a manifest listing them go there — it is a
+distribution endpoint, not source. The firmware source itself is in the private
+`caddis-tech/AquadronePicoFirmware`.
 
 It has to be public because GitHub has no per-asset visibility, and a tech holding
 nothing but `DroneSetup.exe` has no credential to authenticate with. **No token or
@@ -64,7 +66,8 @@ is anonymous.
 **Two channels.** `stable` is a released build. `experimental` is a prerelease
 *production* build — the same firmware, published before it is blessed for the
 fleet. Neither channel ever carries the hardware test (HIL) image; that is not
-published anywhere. See [`docs/firmware-build.md`](../docs/firmware-build.md).
+published anywhere. See [`docs/firmware-build.md`][firmware-build-docs] in the
+internal firmware repo.
 
 **What is checked before anything is flashed:**
 
@@ -86,6 +89,11 @@ published anywhere. See [`docs/firmware-build.md`](../docs/firmware-build.md).
 Downloads land in `%USERPROFILE%\.aquadrone\firmware`, not beside the exe, which is
 often somewhere unwritable.
 
-The private signing key exists only as an Actions secret on this repo. Publishing is
-done by [`.github/workflows/firmware-publish.yml`](../.github/workflows/firmware-publish.yml),
-so a released build always comes from a clean checkout rather than someone's laptop.
+The private signing key exists only as an Actions secret on the private firmware
+repo — never here, and never in the exe. Publishing is done by
+[`.github/workflows/firmware-publish.yml`][firmware-publish] there, so a released
+build always comes from a clean checkout rather than someone's laptop.
+
+[bridge-docs]: https://github.com/caddis-tech/AquadronePicoFirmwareExperimental/blob/main/bridge/BLUEOS_EXTENSION.md
+[firmware-build-docs]: https://github.com/caddis-tech/AquadronePicoFirmwareExperimental/blob/main/docs/firmware-build.md
+[firmware-publish]: https://github.com/caddis-tech/AquadronePicoFirmwareExperimental/blob/main/.github/workflows/firmware-publish.yml

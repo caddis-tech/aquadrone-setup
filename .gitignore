@@ -1,0 +1,13 @@
+# Python tooling caches
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# PyInstaller output (pyinstaller DroneSetup.spec)
+build/
+dist/
+
+# Firmware the app downloads or a tech drops in for a local flash
+*.uf2

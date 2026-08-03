@@ -78,7 +78,17 @@ jobs:
 
       - name: Read VERSION
         id: v
-        run: echo "version=$((Get-Content VERSION -Raw).Trim())" >> $env:GITHUB_OUTPUT
+        # VERSION becomes a release tag and is consumed by the publish step, so
+        # its shape is validated here at the boundary rather than trusted
+        # downstream. A malformed or deliberately crafted file fails the build
+        # instead of reaching a step that holds a contents:write token.
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            Write-Error "VERSION must be x.y.z, got: '$version'"
+            exit 1
+          }
+          echo "version=$version" >> $env:GITHUB_OUTPUT
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v7
@@ -86,14 +96,23 @@ jobs:
           name: DroneSetup-exe
           path: dist/DroneSetup.exe
 
+      # Two guards, not one. `push` is already restricted to main by the trigger,
+      # but workflow_dispatch can be run from any branch the UI offers -- without
+      # the ref check that would let a side branch clobber the published exe.
       - name: Publish GitHub Release
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        # Values reach PowerShell as environment variables rather than through
+        # ${{ }} interpolation. GitHub expands those expressions before the shell
+        # parses the script, so interpolating a file-sourced value inlines it as
+        # code; via env it stays data.
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.v.outputs.version }}
+          COMMIT_SHA: ${{ github.sha }}
         run: |
-          $version = "${{ steps.v.outputs.version }}"
+          $version = $env:VERSION
           gh release view $version *> $null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $version --title "Drone Setup $version" --notes "Automated build from ${{ github.sha }}."
+            gh release create $version --title "Drone Setup $version" --notes "Automated build from $env:COMMIT_SHA."
           }
           gh release upload $version dist/DroneSetup.exe --clobber

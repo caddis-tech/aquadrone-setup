@@ -10,7 +10,14 @@ select = ["E", "F", "W", "I", "UP"]
 # app/ is a directory of plain modules, not an installed package, so isort has
 # no import name to infer first-party status from. Naming them keeps `import
 # flash` sorted with our own code rather than with third-party packages.
-known-first-party = ["extension_settings", "firmware_manifest", "flash", "uf2"]
+known-first-party = [
+    "extension_settings",
+    "firmware_manifest",
+    "flash",
+    "kraken",
+    "provisioning",
+    "uf2",
+]
 
 [tool.mypy]
 python_version = "3.10"

@@ -2,8 +2,8 @@
 
 [![Download DroneSetup.exe](https://img.shields.io/badge/Download-DroneSetup.exe-2ea44f?style=for-the-badge)](https://github.com/caddis-tech/aquadrone-setup/releases/latest/download/DroneSetup.exe)
 
-A small local window for flashing a Pico and generating a drone's BlueOS
-Extension settings — no terminal required. Windows only.
+A small local window for flashing a Pico and provisioning a drone's BlueOS
+Extension. No terminal required. Windows only.
 
 ## Running it
 
@@ -38,17 +38,33 @@ The window has two steps, top to bottom:
      The field starts pre-filled with the newest `AquaD_Pico_v*.uf2` in
      `build/`, or sitting next to `DroneSetup.exe`. This path needs no network,
      which is the point of keeping it.
-2. **BlueOS Extension Settings** — enter the unit's caddis-api token (from
-   caddis-api admin → Devices), then click **Generate Settings JSON**. The
-   bridge ships as a BlueOS Extension (a Docker image installed via BlueOS's
-   own control panel — see [`bridge/BLUEOS_EXTENSION.md`][bridge-docs] in the
-   internal firmware repo), so this app
-   never touches the Pi directly: it builds the ready-to-paste settings JSON
-   (permissions read straight from `bridge/Dockerfile`, plus an `Env` array
-   with the token) and copies it to the clipboard. Paste it, along with the
-   Extension Identifier/Name/image/tag shown above it, into BlueOS →
-   Extensions → INSTALLED → **+**. No SSH, no sudo — Kraken persists the
-   token across restarts and updates.
+2. **BlueOS Extension (MANTA Link)**: check a boat, and fix it. MANTA Link
+   ships as a BlueOS Extension: a Docker image that BlueOS's Extensions Manager
+   (Kraken) pulls, runs, restarts, and updates. No SSH, no sudo, and nothing
+   here touches the Pi's filesystem.
+
+   - **Audit vehicle** reads the boat and changes nothing, so it is safe on a
+     boat in service and is the right first move on any boat. Leave the address
+     blank to search `blueos.local` and `192.168.2.2`, or type one in. It
+     reports five things separately (installed, image, permissions, version,
+     enabled) and states each one even when it passes.
+   - **Install / Repair** audits first, shows exactly what it intends to do,
+     asks, and then does it. It always sends the complete permissions block:
+     Kraken has no partial update, so anything left out is access the container
+     loses. Anything a boat already had in its `Env`, including its token, is
+     carried back over unread.
+   - **Generate Settings JSON** is the manual path, and still the only way to
+     deliver a token: paste the unit's caddis-api token (from caddis-api admin
+     → Devices), click the button, and paste the result with the
+     Identifier/Name/image/tag into BlueOS → Extensions → INSTALLED → **+**.
+
+   **Why the audit matters.** Kraken does not fall back to the image's own
+   `permissions` LABEL. A boat installed with Custom settings left empty stores
+   `{}` and comes up with no `/dev` bind, no host networking, and no persistent
+   volume, while still looking installed, enabled, and on the right tag. MANTA
+   Link then reports `no Pico present`, `Connection refused`, and `no API token
+   configured` at once, and none of those names the cause. Empty permissions is
+   its own reported state for exactly that reason.
 
 ## Downloading firmware
 
@@ -94,6 +110,5 @@ repo — never here, and never in the exe. Publishing is done by
 [`.github/workflows/firmware-publish.yml`][firmware-publish] there, so a released
 build always comes from a clean checkout rather than someone's laptop.
 
-[bridge-docs]: https://github.com/caddis-tech/AquadronePicoFirmwareExperimental/blob/main/bridge/BLUEOS_EXTENSION.md
 [firmware-build-docs]: https://github.com/caddis-tech/AquadronePicoFirmwareExperimental/blob/main/docs/firmware-build.md
 [firmware-publish]: https://github.com/caddis-tech/AquadronePicoFirmwareExperimental/blob/main/.github/workflows/firmware-publish.yml

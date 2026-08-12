@@ -13,6 +13,8 @@ from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
 import extension_settings
 import firmware_manifest
 import flash
+import kraken
+import provisioning
 from uf2 import is_test_firmware
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -48,12 +50,16 @@ class DroneSetupApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Drone Setup")
-        self.geometry("640x760")
-        self.minsize(560, 620)
+        self.geometry("640x820")
+        self.minsize(560, 680)
 
         self.uf2_path = tk.StringVar(value=str(DEFAULT_UF2) if DEFAULT_UF2 else "")
         self.channel = tk.StringVar(value=firmware_manifest.CHANNEL_STABLE)
         self.selected_version = tk.StringVar()
+        # Blank on purpose: an empty box searches the usual addresses, and a
+        # prefilled one would send a tech's first audit at whatever boat happens
+        # to answer there rather than the one in front of them.
+        self.vehicle_host = tk.StringVar()
         self._builds: dict[str, firmware_manifest.Build] = {}
         self._progress_decile = -1
 
@@ -324,15 +330,26 @@ class DroneSetupApp(tk.Tk):
         finally:
             self.flash_button.config(state="normal")
 
-    # -- 2. BlueOS Extension Settings ---------------------------------------
+    # -- 2. BlueOS Extension --------------------------------------------------
     def _build_pi_section(self):
-        frame = ttk.LabelFrame(self, text="2. BlueOS Extension Settings")
+        frame = ttk.LabelFrame(self, text="2. BlueOS Extension (MANTA Link)")
         frame.pack(fill="x", padx=10, pady=8)
 
-        # Kraken (BlueOS's Extensions Manager) owns install, update, restart,
-        # and persisting the token — all through BlueOS's own control panel.
-        # Nothing here touches the Pi: these are read-only fields to copy
-        # alongside the generated settings JSON below.
+        self._build_vehicle_controls(frame)
+        ttk.Separator(frame, orient="horizontal").pack(fill="x", padx=8, pady=(10, 6))
+        ttk.Label(
+            frame,
+            text=(
+                "Manual path, still the only way to deliver a token. Paste the "
+                "fields below, with the generated JSON, into BlueOS -> Extensions "
+                "-> INSTALLED -> + ."
+            ),
+            wraplength=560,
+            justify="left",
+        ).pack(fill="x", padx=8, pady=(0, 4), anchor="w")
+
+        # Read-only reference fields for that manual path. Nothing here touches
+        # the Pi; the buttons above are what talk to it.
         for label, value in (
             ("Extension Identifier:", extension_settings.EXTENSION_IDENTIFIER),
             ("Extension Name:", extension_settings.EXTENSION_NAME),
@@ -350,17 +367,6 @@ class DroneSetupApp(tk.Tk):
         self.token = tk.StringVar()
         self._labeled_entry(frame, "Token:", self.token, show="*")
 
-        ttk.Label(
-            frame,
-            text=(
-                "Paste all of the above into BlueOS -> Extensions -> "
-                "INSTALLED -> + . No SSH needed — Kraken persists the token "
-                "across restarts and updates."
-            ),
-            wraplength=560,
-            justify="left",
-        ).pack(fill="x", padx=8, pady=(6, 4), anchor="w")
-
         ttk.Button(
             frame, text="Generate Settings JSON", command=self._generate_settings
         ).pack(padx=8, pady=(0, 4), anchor="w")
@@ -369,6 +375,150 @@ class DroneSetupApp(tk.Tk):
             frame, height=4, state="disabled", wrap="word"
         )
         self.settings_text.pack(fill="x", padx=8, pady=(0, 8))
+
+    # -- Talking to the vehicle ----------------------------------------------
+    #
+    # Same threading rule as the firmware section above: the network work runs on
+    # a worker and every widget touch goes through self.after(). Dialogs included:
+    # asking a question from a worker thread is the kind of failure that only
+    # shows up on someone else's laptop.
+
+    def _build_vehicle_controls(self, parent):
+        row = ttk.Frame(parent)
+        row.pack(fill="x", padx=8, pady=(6, 2))
+        ttk.Label(row, text="Vehicle address:", width=26).pack(side="left")
+        ttk.Entry(row, textvariable=self.vehicle_host).pack(side="left", fill="x", expand=True)
+
+        row = ttk.Frame(parent)
+        row.pack(fill="x", padx=8, pady=(2, 2))
+        self.audit_button = ttk.Button(row, text="Audit vehicle", command=self._start_audit)
+        self.audit_button.pack(side="left")
+        self.provision_button = ttk.Button(
+            row, text="Install / Repair", command=self._start_provision
+        )
+        self.provision_button.pack(side="left", padx=6)
+        ttk.Label(
+            row,
+            text=f"Leave blank to search {', '.join(kraken.DEFAULT_HOSTS)}.",
+        ).pack(side="left", padx=6)
+
+        ttk.Label(
+            parent,
+            text=(
+                "Audit changes nothing and is safe on a boat in service. "
+                "Install / Repair asks before it touches the vehicle."
+            ),
+            wraplength=560,
+            justify="left",
+        ).pack(fill="x", padx=8, pady=(2, 0), anchor="w")
+
+    def _set_vehicle_buttons(self, state: str):
+        self.audit_button.config(state=state)
+        self.provision_button.config(state=state)
+
+    def _audit_vehicle(self, host: str) -> tuple[str, provisioning.AuditReport]:
+        """Read the vehicle and compare it against the image. Read-only."""
+        if host:
+            self._log(f"Reading {host}...")
+            extensions = kraken.fetch_installed_extensions(host)
+        else:
+            self._log(f"Looking for a vehicle on {', '.join(kraken.DEFAULT_HOSTS)}...")
+            host, extensions = kraken.discover_vehicle()
+        self._log(f"{host}: {len(extensions)} extension(s) installed.")
+        installed = kraken.find_extension(extensions, extension_settings.EXTENSION_IDENTIFIER)
+        return host, provisioning.audit(installed)
+
+    def _log_report(self, report: provisioning.AuditReport):
+        for line in report.lines:
+            self._log(f"  {line}")
+        self._log(f"  {report.summary}")
+        if not report.ok:
+            self._log(f"  Fix: {provisioning.describe_actions(report.actions)}.")
+
+    def _start_audit(self):
+        self._set_vehicle_buttons("disabled")
+        threading.Thread(
+            target=self._audit, args=(self.vehicle_host.get().strip(),), daemon=True
+        ).start()
+
+    def _audit(self, host: str):
+        try:
+            _, report = self._audit_vehicle(host)
+            self._log_report(report)
+        except kraken.KrakenError as exc:
+            self._log(f"FAIL - {exc}")
+        except Exception as exc:  # noqa: BLE001 - surface any failure to the log panel
+            self._log(f"FAIL - unexpected error auditing the vehicle: {exc}")
+        self.after(0, self._set_vehicle_buttons, "normal")
+
+    def _start_provision(self):
+        # Audits first, every time, rather than acting on whatever the last audit
+        # found: the boat may have been changed since, and the plan the tech is
+        # about to approve has to describe the vehicle as it is now.
+        self._set_vehicle_buttons("disabled")
+        self._log("Checking the vehicle before changing anything...")
+        threading.Thread(
+            target=self._plan_provision, args=(self.vehicle_host.get().strip(),), daemon=True
+        ).start()
+
+    def _plan_provision(self, host: str):
+        try:
+            host, report = self._audit_vehicle(host)
+        except kraken.KrakenError as exc:
+            self._log(f"FAIL - {exc}")
+            self.after(0, self._set_vehicle_buttons, "normal")
+            return
+        except Exception as exc:  # noqa: BLE001 - surface any failure to the log panel
+            self._log(f"FAIL - unexpected error reading the vehicle: {exc}")
+            self.after(0, self._set_vehicle_buttons, "normal")
+            return
+        self._log_report(report)
+        self.after(0, self._confirm_provision, host, report)
+
+    def _confirm_provision(self, host: str, report: provisioning.AuditReport):
+        if report.ok:
+            self._log("Nothing to do. The vehicle was not changed.")
+            self._set_vehicle_buttons("normal")
+            return
+
+        if not messagebox.askokcancel(
+            "Drone Setup",
+            f"On {host}:\n\n{provisioning.describe_actions(report.actions)}.\n\n"
+            "This changes the vehicle and restarts the extension. Continue?",
+            parent=self,
+        ):
+            self._log("Cancelled. The vehicle was not changed.")
+            self._set_vehicle_buttons("normal")
+            return
+
+        threading.Thread(target=self._provision, args=(host, report), daemon=True).start()
+
+    def _provision(self, host: str, report: provisioning.AuditReport):
+        try:
+            provisioning.apply_plan(host, report, self._log)
+            self._log(
+                "  MANTA Link reads its token from the extension's data volume or its "
+                "Env. This tool does not deliver tokens: if the vehicle reports 'no API "
+                "token configured', use the settings JSON below."
+            )
+            # Re-read the boat rather than assume. Kraken accepting the call is not
+            # the same as the permissions having taken, and that gap is the whole
+            # reason this section exists.
+            self._log("Re-reading the vehicle to confirm what took...")
+            _, after = self._audit_vehicle(host)
+            self._log_report(after)
+        except kraken.KrakenError as exc:
+            self._log(f"FAIL - {exc}")
+            # Deliberately does not claim the vehicle is untouched: a plan can
+            # fail on its second step, and saying otherwise sends a tech looking
+            # in the wrong place.
+            self._log(
+                "  Part of the plan may have run. Click Audit vehicle to see where "
+                "it stands. The settings JSON below installs the same thing by hand."
+            )
+        except Exception as exc:  # noqa: BLE001 - surface any failure to the log panel
+            self._log(f"FAIL - unexpected error provisioning the vehicle: {exc}")
+        self.after(0, self._set_vehicle_buttons, "normal")
 
     def _labeled_entry(self, parent, label, var, show=None):
         row = ttk.Frame(parent)

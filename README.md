@@ -2,9 +2,10 @@
 
 [![Download DroneSetup.exe](https://img.shields.io/badge/Download-DroneSetup.exe-2ea44f?style=for-the-badge)](https://github.com/caddis-tech/aquadrone-setup/releases/latest/download/DroneSetup.exe)
 
-`DroneSetup.exe` — the Windows field tool for bringing up an Aquadrone unit:
-flash a Pico with published firmware, and generate the drone's BlueOS Extension
-settings. No terminal, no Python install, no repo clone.
+`DroneSetup.exe` is the Windows field tool for bringing up an Aquadrone unit:
+flash a Pico with published firmware, then audit, install, or repair the boat's
+MANTA Link extension over BlueOS's own API. No terminal, no Python install, no
+repo clone.
 
 Field techs want the badge above. Everything below is for people working on the
 tool itself.
@@ -22,16 +23,18 @@ tool itself.
 
 ### The vendored `manta-link/Dockerfile`
 
-`app/extension_settings.py` builds the BlueOS install settings by parsing two
+`app/extension_settings.py` reads what a correct install looks like by parsing two
 `LABEL`s straight out of MANTA Link's Dockerfile rather than duplicating them as
 constants: `permissions` (the container's access) and `version` (the Docker tag).
+`app/kraken.py` sends that to a boat, and `app/provisioning.py` compares a boat
+against it.
 
-Generating the permissions block is the point of the tool. **Kraken does not fall
-back to the image's own `permissions` LABEL**: installing with Custom settings
+Getting the permissions block right is the point of the tool. **Kraken does not
+fall back to the image's own `permissions` LABEL**: installing with Custom settings
 left empty stores `{}`, and MANTA Link then starts with no `/dev` bind, no host
 networking, and no persistent volume. It reports "no API token configured",
 "connection refused", and "no Pico present", three symptoms that look like
-unrelated bugs and name nothing.
+unrelated bugs and name nothing. The audit exists to name it in one line.
 
 The tag is read from the `version` LABEL and **not** from the root `VERSION`,
 which is the exe's own version and moves independently. This tool was at 1.2.0

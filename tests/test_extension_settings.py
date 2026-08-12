@@ -9,6 +9,7 @@ import json
 import re
 
 import extension_settings
+import pytest
 
 
 def test_build_install_settings_embeds_the_token():
@@ -82,3 +83,69 @@ def test_identifier_and_image_target_manta_link():
     # The bridge this replaced is a dead design; pointing at it installs nothing.
     assert extension_settings.EXTENSION_IDENTIFIER == "caddis.manta-link"
     assert extension_settings.DOCKER_IMAGE == "ghcr.io/caddis-tech/manta-link"
+
+
+# -- The body Kraken is sent directly ----------------------------------------
+
+
+def test_the_install_body_carries_every_field_kraken_requires():
+    # Kraken's ExtensionSource requires all six. A body missing one is a 422 that
+    # a tech reads as "the boat refused", with nothing to act on.
+    source = extension_settings.build_extension_source()
+
+    assert set(source) >= {"identifier", "tag", "name", "docker", "enabled", "permissions"}
+    assert source["identifier"] == "caddis.manta-link"
+    assert source["tag"] == extension_settings.read_extension_version()
+    assert source["enabled"] is True
+
+
+def test_neither_permissions_field_is_ever_installed_empty():
+    """The failure class, closed at the source.
+
+    Kraken starts the container from `user_permissions` whenever that is set to
+    anything at all, `{}` included, and falls back to `permissions` only when it
+    is genuinely unset. Filling both means no boat this tool installs can come up
+    with no /dev bind, no host networking and no persistent volume.
+    """
+    source = extension_settings.build_extension_source()
+
+    for field in ("permissions", "user_permissions"):
+        assert json.loads(source[field])["HostConfig"] == (
+            extension_settings.read_docker_permissions()["HostConfig"]
+        )
+
+
+def test_the_manifest_permissions_field_carries_no_credential():
+    # Only user_permissions needs Env. Writing a boat's token into a second field
+    # that nothing reads is one more place it can leak from.
+    source = extension_settings.build_extension_source(["CADDIS_API_TOKEN=s3cret"])
+
+    assert "Env" not in json.loads(source["permissions"])
+    assert "s3cret" not in source["permissions"]
+
+
+def test_installing_states_the_production_api_url():
+    env = json.loads(extension_settings.build_extension_source()["user_permissions"])["Env"]
+
+    assert "CADDIS_API_URL=https://api.caddistech.com" in env
+
+
+def test_a_reinstall_keeps_the_token_the_boat_already_had():
+    # Kraken has no partial update: an Env variable this body omits is one the
+    # container loses. Repairing a boat's permissions must not cost it its token.
+    source = extension_settings.build_extension_source(["CADDIS_API_TOKEN=s3cret"])
+
+    assert "CADDIS_API_TOKEN=s3cret" in json.loads(source["user_permissions"])["Env"]
+
+
+def test_a_boat_left_pointed_at_a_bench_endpoint_is_put_back_on_production():
+    # It would otherwise upload nowhere anyone is looking, while reporting
+    # perfect health.
+    env = extension_settings.merge_env(["CADDIS_API_URL=http://bench.local:8000"])
+
+    assert env == ["CADDIS_API_URL=https://api.caddistech.com"]
+
+
+def test_env_that_is_not_a_name_value_pair_is_refused_rather_than_sent_back():
+    with pytest.raises(ValueError):
+        extension_settings.merge_env(["JUST_A_NAME"])

@@ -108,36 +108,40 @@ clears it. See [`docs/firmware-build.md`](firmware-build.md) and entry seven in
 
 ---
 
-## Step 4 — Install the extension via BlueOS's control panel
+## Step 4 — Install the extension
 
-The bridge ships as a BlueOS Extension: a Docker image that BlueOS's
-Extensions Manager (Kraken) pulls, runs, restarts, and updates — see
-[`bridge/BLUEOS_EXTENSION.md`](https://github.com/caddis-tech/AquadronePicoFirmwareExperimental/blob/main/bridge/BLUEOS_EXTENSION.md) for the full
-rationale and reference. Provisioning it, including the token, happens
-entirely through BlueOS's own web UI — no SSH, no sudo:
+MANTA Link ships as a BlueOS Extension: a Docker image that BlueOS's Extensions
+Manager (Kraken) pulls, runs, restarts, and updates. Nothing here touches the
+Pi's filesystem: no `/opt/aquadrone`, no systemd, no SSH keys.
 
-1. Same app, **2. BlueOS Extension Settings** section: paste in the token
-   from Step 2 and click **Generate Settings JSON**. It's copied to the
-   clipboard automatically (and shown in the box below, to eyeball before
-   pasting). The generated JSON is built from the actual `bridge/Dockerfile`
-   permissions and the current `VERSION`, so it can't drift from what the
-   image really ships with, and the token is baked into its `Env` array —
-   there's no way to point a drone at anything but prod
-   (`CADDIS_API_URL=https://api.caddistech.com` is fixed in it too).
+**A boat that already has MANTA Link**: use the app. In **2. BlueOS Extension
+(MANTA Link)**, leave the address blank (it looks for `blueos.local` and
+`192.168.2.2`) or type the boat's address, then click **Audit vehicle**. That
+reads the boat and changes nothing. If it reports anything wrong, **Install /
+Repair** shows what it intends to do, asks, and then does it, always sending
+the complete permissions block, because Kraken has no partial update.
+
+**A new boat** needs its token, and the app does not deliver tokens over the
+API. Use the manual path below, which does it in one step:
+
+1. Same section, lower half: paste in the token from Step 2 and click
+   **Generate Settings JSON**. It is copied to the clipboard and shown in the
+   box, to eyeball before pasting. The JSON is built from the real
+   `manta-link/Dockerfile` permissions and its `version` LABEL, so it cannot
+   drift from what the image ships with, and there is no way to point a drone
+   at anything but prod (`CADDIS_API_URL=https://api.caddistech.com` is fixed
+   in it too).
 2. In BlueOS → Extensions → **INSTALLED** → the **+** button, fill in the
    Extension Identifier / Name / Docker image / Docker tag shown in the app,
-   paste the generated JSON as the settings, and install. It will crash-loop
-   immediately after install — that is expected: Kraken starts the container
-   before anyone could possibly have supplied a token yet, and this JSON
-   already has it, so the very next restart picks it up.
-3. If BlueOS shows the container unhealthy, restart the extension from
-   Extensions Manager — a fresh install occasionally needs one restart to
-   pick up the just-provided Env.
+   paste the generated JSON into **Custom settings**, and install.
 
-This app never touches the Pi's filesystem — no `/opt/aquadrone`, no systemd,
-no SSH keys. `bridge/deploy.sh` and the old systemd install remain only for a
-boat not yet migrated to the extension; see
-[`bridge/README.md`](https://github.com/caddis-tech/AquadronePicoFirmwareExperimental/blob/main/bridge/README.md).
+   **Do not leave Custom settings empty.** Kraken does not fall back to the
+   image's own `permissions` LABEL: it stores `{}` and the container starts
+   with no `/dev` bind, no host networking and no persistent volume. MANTA Link
+   then reports `no Pico present`, `Connection refused`, and `no API token
+   configured` all at once, and none of those names the cause.
+3. Click **Audit vehicle** to confirm it took. That is the check that catches
+   step 2 having gone wrong, and it is worth running on every boat.
 
 ---
 

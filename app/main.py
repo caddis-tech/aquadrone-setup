@@ -337,7 +337,7 @@ class DroneSetupApp(tk.Tk):
             ("Extension Identifier:", extension_settings.EXTENSION_IDENTIFIER),
             ("Extension Name:", extension_settings.EXTENSION_NAME),
             ("Docker image:", extension_settings.DOCKER_IMAGE),
-            ("Docker tag:", extension_settings.read_version()),
+            ("Docker tag:", extension_settings.read_extension_version()),
         ):
             row = ttk.Frame(frame)
             row.pack(fill="x", padx=8, pady=2)

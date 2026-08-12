@@ -13,14 +13,17 @@ import os
 
 ROOT = SPECPATH  # noqa: F821 — injected by PyInstaller
 
-# The bridge itself ships as a BlueOS Extension (Docker image via GHCR) —
-# this app never touches a Pi's filesystem. extension_settings.py only reads
-# two local files to build the install settings a tech pastes into BlueOS's
-# control panel: the root VERSION (the Docker tag) and bridge/Dockerfile
-# (the source of truth for the container's permissions LABEL).
+# MANTA Link ships as a BlueOS Extension (Docker image via GHCR), so this app
+# never touches a Pi's filesystem. extension_settings.py reads one local file to
+# build the install settings a tech pastes into BlueOS's control panel:
+# manta-link/Dockerfile, the source of truth for both the container's permissions
+# LABEL and the version LABEL that supplies the Docker tag.
+#
+# The root VERSION is deliberately not bundled: it is the exe's own version and
+# moves independently of the extension's, so using it as the tag would send a
+# tech to install an image that does not exist.
 datas = [
-    (os.path.join(ROOT, "VERSION"), "."),
-    (os.path.join(ROOT, "bridge", "Dockerfile"), "bridge"),
+    (os.path.join(ROOT, "manta-link", "Dockerfile"), "manta-link"),
 ]
 
 # hiddenimports stays empty on purpose, including for cryptography, which the version

@@ -1,0 +1,70 @@
+name: Tests
+
+# Runs the pytest suite on windows-latest, the only platform DroneSetup.exe ships
+# to. The platform is load-bearing, not incidental: test_extension_settings.py's
+# CRLF case guards a failure that only reproduces under core.autocrlf=true, which
+# is the Windows default and what this runner uses. A Linux-hosted run of the same
+# suite would pass while leaving that bug uncaught.
+#
+# Deliberately separate from drone-setup-release.yml. A paths filter applies to a
+# whole workflow rather than to one job, so adding tests/** there would make every
+# test-only merge to main rebuild the exe and re-upload the release asset.
+
+# manta-link/** and .gitattributes are inputs to the suite, not just app code:
+# extension_settings.py parses that Dockerfile's LABELs, and the `eol=lf` rule is
+# the only thing stopping this runner from checking it out CRLF. GitHub Actions
+# has no YAML anchors, so the push and pull_request lists are duplicated.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "tests/**"
+      - "manta-link/**"
+      - ".gitattributes"
+      - "pyproject.toml"
+      - ".github/workflows/tests.yml"
+  pull_request:
+    paths:
+      - "app/**"
+      - "tests/**"
+      - "manta-link/**"
+      - ".gitattributes"
+      - "pyproject.toml"
+      - ".github/workflows/tests.yml"
+  workflow_dispatch:
+
+# Nothing here publishes, so read access to the checkout is the whole need.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Unlike the release workflow, no run leaves anything half-created behind, so
+  # superseding one is always free.
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: pytest on windows-latest
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.10"
+
+      # pytest is absent from app/requirements.txt on purpose: that file is the
+      # runtime dependency list PyInstaller bundles into the exe. Installing it
+      # separately here mirrors the README's developer setup.
+      - name: Install dependencies
+        run: |
+          pip install -r app/requirements.txt
+          pip install pytest
+
+      # No PYTHONPATH needed. tests/conftest.py puts app/ on sys.path and
+      # pyproject.toml points testpaths at tests/, so this is the identical
+      # command a developer runs locally.
+      - name: Run tests
+        run: python -m pytest

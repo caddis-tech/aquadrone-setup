@@ -11,9 +11,12 @@ select = ["E", "F", "W", "I", "UP"]
 # no import name to infer first-party status from. Naming them keeps `import
 # flash` sorted with our own code rather than with third-party packages.
 known-first-party = [
+    "autopilot",
+    "blueos",
     "extension_settings",
     "firmware_manifest",
     "flash",
+    "gcs_link",
     "kraken",
     "provisioning",
     "uf2",

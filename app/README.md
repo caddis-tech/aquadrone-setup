@@ -21,7 +21,7 @@ pip install -r app/requirements.txt
 python app/main.py
 ```
 
-The window has two steps, top to bottom:
+The window has three steps, top to bottom:
 
 1. **Flash Pico** — get a `.uf2`, then click **Flash Pico**. Put the Pico in
    BOOTSEL mode (hold the white button while plugging it in) when prompted in
@@ -65,6 +65,50 @@ The window has two steps, top to bottom:
    Link then reports `no Pico present`, `Connection refused`, and `no API token
    configured` at once, and none of those names the cause. Empty permissions is
    its own reported state for exactly that reason.
+3. **QGroundControl link (MAVLink endpoints)**: make sure an operator can reach
+   the boat. Uses the same vehicle address as step 2, on the autopilot manager's
+   port 8000 rather than Kraken's 9134.
+
+   The boat listens and the operator dials it. `GCS Server Link` is a stock
+   BlueOS endpoint, `udpin` on `0.0.0.0:14550`, that ships **disabled**;
+   enabling it is the whole of this step. `0.0.0.0` binds every interface, so
+   one endpoint serves the cellular path over ZeroTier, the base station, and
+   anything added later, and the boat stores no ground station address at all.
+   To connect, add a UDP link in QGroundControl to the boat's address on port
+   14550.
+
+   - **Check QGC link** reads the endpoint list and changes nothing, so it is
+     safe on a boat in service. It reports five things separately and states
+     each one even when it passes.
+   - **Enable / Repair** audits first, shows what it intends to do, asks, and
+     then does it. It writes **once**: every write to the endpoint list restarts
+     MAVLink Router.
+
+   **Three answers, not two.** Absent, present and correct, and present but
+   pointing somewhere else are reported separately. The third is left exactly as
+   it is: a boat somebody deliberately moved is a fact for the operator, not a
+   conflict for this tool to settle behind their back.
+
+   **What it will not touch.** Endpoints flagged `protected` are never written,
+   at the wire as well as in the planner. Three of them (`MAVLink2Rest`,
+   `MAVLink2RestServer`, `Internal Link`) carry GPS into every telemetry record,
+   and a boat that loses them keeps capturing, keeps uploading and reports
+   healthy while every reading arrives with no position: the only symptom is
+   `records_without_position` climbing while `records_with_position` stays flat.
+   They are checked and reported, never changed. `GCS Client Link`, the base
+   station path, is never modified either.
+
+   **Every write restarts MAVLink Router**, which drops every ground station
+   connected to the boat. QGroundControl does not notice: it holds the dead link
+   open and still looks connected, so it has to be disconnected and reconnected
+   by hand. Never do this while a vehicle is under way. Anything created is
+   marked `persistent`, because the API defaults that to false and an endpoint
+   without it works perfectly until the next router reload and is then gone.
+
+   Reading the list back from PowerShell to check by hand needs
+   `(Invoke-WebRequest ...).Content | ConvertFrom-Json`. `Invoke-RestMethod`
+   wraps the JSON array as a single object, so `.Count` is 1 and `Select-Object`
+   prints one blank row that looks exactly like an empty endpoint list.
 
 ## Downloading firmware
 

@@ -22,41 +22,25 @@ from __future__ import annotations
 
 import json
 import re
-import urllib.error
 import urllib.parse
-import urllib.request
 from dataclasses import dataclass
 from typing import Any
+
+import blueos
 
 # Kraken's own port. BlueOS proxies it on 80 as well, but the direct port is what
 # the issue's API table was verified against and it skips the proxy entirely.
 KRAKEN_PORT = 9134
 API_PREFIX = "/v1.0"
 
-# Where to look for a vehicle when the tech has not typed an address.
-#
-# blueos.local is BlueOS's mDNS name, resolved by Windows' own resolver, so this
-# needs no zeroconf dependency in an exe that PyInstaller has to bundle.
-# 192.168.2.2 is BlueOS's fixed address on the tether interface and is what
-# answers when a laptop is plugged straight into the boat.
-DEFAULT_HOSTS = ("blueos.local", "192.168.2.2")
-
-# A probe has to fail fast: discovery walks the list above and a tech is waiting.
-DISCOVERY_TIMEOUT = 4.0
-REQUEST_TIMEOUT = 15.0
+# Addressing and the HTTP plumbing are shared with the autopilot manager client;
+# see blueos.py. Re-exported so a caller that only talks to Kraken has one import.
+DEFAULT_HOSTS = blueos.DEFAULT_HOSTS
+DISCOVERY_TIMEOUT = blueos.DISCOVERY_TIMEOUT
+REQUEST_TIMEOUT = blueos.REQUEST_TIMEOUT
 # Install pulls an arm/v7 image onto the boat, sometimes over cellular, and the
 # response does not come back until that finishes.
 INSTALL_TIMEOUT = 600.0
-
-# Enough of any response to quote in an error. Kraken's install streams Docker
-# pull progress, which is unbounded and worth none of the tech's memory.
-MAX_RESPONSE_BYTES = 64 * 1024
-_CHUNK_BYTES = 16 * 1024
-
-# A hostname, an IPv4 address, or either with an explicit :port. Deliberately not
-# a URL: accepting a path would turn a typo into a request against something
-# other than the boat, and there is nothing a tech needs to reach here but a host.
-_HOST = re.compile(r"[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?(:\d{1,5})?")
 
 # Environment variable names whose values must never be displayed. Matched as a
 # substring so CADDIS_API_TOKEN and any future FOO_SECRET are both covered;
@@ -221,48 +205,13 @@ def find_extension(
 
 
 def base_url(host: str) -> str:
-    """The API root for a typed-in address, e.g. "blueos.local" -> the v1.0 root.
-
-    A scheme and a trailing slash are forgiven because techs paste them, but a
-    path is refused rather than silently dropped: an address with a path in it
-    means the tech is looking at something other than the boat's API, and a
-    request built from it would go somewhere we cannot vouch for.
-    """
-    cleaned = host.strip()
-    for scheme in ("http://", "https://"):
-        if cleaned.lower().startswith(scheme):
-            cleaned = cleaned[len(scheme):]
-    cleaned = cleaned.rstrip("/")
-
-    if not cleaned:
-        raise KrakenError("No vehicle address given. Try blueos.local, or the boat's IP.")
-    if not _HOST.fullmatch(cleaned):
+    """The API root for a typed-in address, e.g. "blueos.local" -> the v1.0 root."""
+    try:
+        return f"http://{blueos.vehicle_host(host, KRAKEN_PORT)}{API_PREFIX}"
+    except blueos.BlueOsError as exc:
         raise KrakenError(
-            f"{host!r} is not a plain address. Enter just the hostname or IP, with an "
-            "optional :port. For example blueos.local, 192.168.2.2, or "
-            f"10.198.95.122:{KRAKEN_PORT}."
-        )
-
-    if ":" not in cleaned:
-        cleaned = f"{cleaned}:{KRAKEN_PORT}"
-    return f"http://{cleaned}{API_PREFIX}"
-
-
-def _read_bounded(response: Any) -> str:
-    """Drain a response, keeping only the first MAX_RESPONSE_BYTES of it.
-
-    Kraken's install endpoint streams Docker pull progress for as long as the pull
-    takes. Closing the socket once we had enough would abort the pull rather than
-    just truncating our copy of it, so the rest is read and thrown away.
-    """
-    kept = bytearray()
-    while True:
-        chunk = response.read(_CHUNK_BYTES)
-        if not chunk:
-            break
-        if len(kept) < MAX_RESPONSE_BYTES:
-            kept.extend(chunk[: MAX_RESPONSE_BYTES - len(kept)])
-    return kept.decode("utf-8", errors="replace")
+            f"{exc} For example blueos.local, 192.168.2.2, or 10.198.95.122:{KRAKEN_PORT}."
+        ) from exc
 
 
 def _request(
@@ -277,33 +226,19 @@ def _request(
 
     `params` are urlencoded, so an identifier is escaped rather than concatenated.
     Nothing secret is ever passed here as a parameter; see the module docstring.
+
+    Every message that can quote the boat goes through scrub_secrets on its way
+    into the exception, which is what keeps a reinstall body Kraken rejected and
+    echoed back from carrying that boat's API token into a log panel.
     """
     url = f"{base_url(host)}{path}"
     if params:
         url = f"{url}?{urllib.parse.urlencode(params)}"
 
-    data = json.dumps(body).encode("utf-8") if body is not None else None
-    if data is None and method == "POST":
-        # A POST with no body still needs one, or urllib sends a GET.
-        data = b""
-    headers = {"User-Agent": "DroneSetup", "Accept": "application/json"}
-    if body is not None:
-        headers["Content-Type"] = "application/json"
-
-    request = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
-            return _read_bounded(response)
-    except urllib.error.HTTPError as exc:
-        detail = scrub_secrets(exc.read(MAX_RESPONSE_BYTES).decode("utf-8", errors="replace"))
-        raise KrakenError(
-            f"{method} {path} on {host} answered {exc.code} {exc.reason}. {detail}".strip()
-        ) from exc
-    except (urllib.error.URLError, OSError) as exc:
-        raise KrakenError(
-            f"Could not reach BlueOS at {host}: {exc}. Check that the laptop is on the "
-            "boat's network and that BlueOS is up."
-        ) from exc
+        return blueos.request(url, method=method, body=body, timeout=timeout, scrub=scrub_secrets)
+    except blueos.BlueOsError as exc:
+        raise KrakenError(str(exc)) from exc
 
 
 def fetch_installed_extensions(

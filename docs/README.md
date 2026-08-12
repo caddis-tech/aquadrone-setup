@@ -145,7 +145,46 @@ API. Use the manual path below, which does it in one step:
 
 ---
 
-## Step 5 — Verify
+## Step 5 — Enable the QGroundControl link
+
+The boat listens and the operator dials it. `GCS Server Link` is a stock BlueOS
+endpoint, `udpin` on `0.0.0.0:14550`, that every install ships **disabled**.
+
+In the app's **3. QGroundControl link**, with the same vehicle address as Step 4,
+click **Check QGC link**. That reads the boat's endpoint list and changes
+nothing. If `GCS Server Link` is disabled, **Enable / Repair** shows what it
+intends to do, asks, and does it in a single write.
+
+To connect, add a UDP link in QGroundControl to the boat's address on port
+`14550`. Over cellular that is the boat's ZeroTier address; DB Cooper is
+`10.198.95.122:14550`. Because `0.0.0.0` binds every interface, the same
+endpoint also serves the base station, and nothing about an operator's machine
+is stored on the drone.
+
+**Access control is ZeroTier membership.** A `udpin` endpoint accepts MAVLink
+from anyone who can reach it, so who is on the ZeroTier network is the whole
+authorization story for controlling a vehicle.
+
+Two cautions:
+
+- **Every write restarts MAVLink Router** and drops every ground station
+  connected to the boat. QGroundControl does not notice: it holds the dead link
+  open and still looks connected, so it has to be disconnected and reconnected
+  by hand. Never do this while a vehicle is under way.
+- **Do not tidy up the "unused" loopback endpoints** (`MAVLink2Rest`,
+  `MAVLink2RestServer`, `Internal Link`). They carry GPS into every telemetry
+  record. A boat that loses them keeps capturing, keeps uploading and reports
+  healthy while every reading arrives with no position, and the only symptom is
+  `records_without_position` climbing while `records_with_position` stays flat.
+  They are flagged `protected`, and the app refuses to write them.
+
+Telemetry capture and upload do not depend on any of this. The intended
+operation is to connect with QGroundControl, plan a survey, disconnect, and
+leave the boat recording and uploading with nothing watching it.
+
+---
+
+## Step 6 — Verify
 
 - **Logs** — BlueOS → Extensions → Aquadrone Bridge → Logs (legacy systemd
   install only: `ssh pi@<PI_IP> "journalctl -u aquadrone-bridge -f"`)

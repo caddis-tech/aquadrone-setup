@@ -290,15 +290,8 @@ def test_an_unreachable_boat_says_what_to_check(monkeypatch):
         kraken.fetch_installed_extensions("blueos.local")
 
 
-def test_a_long_response_is_drained_rather_than_cut_off():
-    """Install streams Docker pull progress. Closing the socket early aborts the
-    pull instead of just truncating our copy of it."""
-    response = _FakeResponse(b"x" * (kraken.MAX_RESPONSE_BYTES + 5000))
-
-    kept = kraken._read_bounded(response)
-
-    assert len(kept) == kraken.MAX_RESPONSE_BYTES
-    assert response.read(1) == b""
+# Bounded reading and the urllib plumbing moved to blueos.py when the autopilot
+# manager client needed the same thing; they are tested in test_blueos.py.
 
 
 # -- Discovery ---------------------------------------------------------------

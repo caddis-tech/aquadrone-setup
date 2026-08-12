@@ -18,24 +18,35 @@ tool itself.
 | `DroneSetup.spec` | PyInstaller build definition. |
 | `VERSION` | The exe's version. Bumping it on `main` mints a new GitHub Release. |
 | `docs/` | Operational notes for the drone setup process. |
-| `bridge/Dockerfile` | **Vendored copy — see below.** Not buildable here. |
+| `manta-link/Dockerfile` | **Vendored copy, see below.** Not buildable here. |
 
-### The vendored `bridge/Dockerfile`
+### The vendored `manta-link/Dockerfile`
 
-`app/extension_settings.py` builds the BlueOS install settings by parsing the
-`LABEL permissions=` block straight out of the bridge's Dockerfile, deliberately
-rather than duplicating it as a constant — a malformed permissions block installs
-cleanly and then looks like a hardware fault, so the app reads the real thing.
-`DroneSetup.spec` bundles that file into the exe.
+`app/extension_settings.py` builds the BlueOS install settings by parsing two
+`LABEL`s straight out of MANTA Link's Dockerfile rather than duplicating them as
+constants: `permissions` (the container's access) and `version` (the Docker tag).
 
-The bridge itself lives in the private `AquadronePicoFirmwareExperimental` repo,
-so this is a **byte-identical vendored copy**, kept unannotated so checking it is
-a plain `diff`. It cannot be built here — its build context is that repo's root
-and it `COPY`s bridge sources that do not exist in this repo.
+Generating the permissions block is the point of the tool. **Kraken does not fall
+back to the image's own `permissions` LABEL**: installing with Custom settings
+left empty stores `{}`, and MANTA Link then starts with no `/dev` bind, no host
+networking, and no persistent volume. It reports "no API token configured",
+"connection refused", and "no Pico present", three symptoms that look like
+unrelated bugs and name nothing.
 
-**If the bridge's permissions LABEL changes, this copy must be updated.** Nothing
-currently enforces that. The intended fix is a drift check in the private repo
-(which can read both) asserting its `bridge/Dockerfile` matches this one.
+The tag is read from the `version` LABEL and **not** from the root `VERSION`,
+which is the exe's own version and moves independently. This tool was at 1.2.0
+while MANTA Link was at 0.9.0, so using `VERSION` as the tag sends a tech to
+install an image that was never published.
+
+MANTA Link lives in the `manta-link` repo, so this is a **byte-identical vendored
+copy**, kept unannotated so checking it is a plain `diff`. It cannot be built
+here: its build context is that repo's root and it `COPY`s sources that do not
+exist in this repo. `DroneSetup.spec` bundles it into the exe.
+
+**If MANTA Link's `permissions` or `version` LABEL changes, this copy must be
+updated.** Nothing currently enforces that. The intended fix is a drift check in
+the `manta-link` repo (which can read both) asserting its `Dockerfile` matches
+this one.
 
 ## Developing
 
@@ -63,7 +74,8 @@ and only a `VERSION` bump creates a new release.
 | --- | --- |
 | [`aquadrone-firmware-releases`](https://github.com/caddis-tech/aquadrone-firmware-releases) | Public distribution endpoint. Compiled `.uf2` builds plus a signed `manifest.json`. This is what the app downloads from. Not source. |
 | `AquadronePicoFirmware` | Private. The Pico firmware source. |
-| `AquadronePicoFirmwareExperimental` | Private, frozen. Where this tool used to live, alongside the Pi bridge. |
+| `manta-link` | The Pi-side BlueOS Extension this tool provisions. Source of the vendored `Dockerfile`. |
+| `AquadronePicoFirmwareExperimental` | Private, frozen. Where this tool used to live, alongside the old Pi bridge that `manta-link` replaced. |
 
 **No credential ships in the exe.** It carries only the public half of the
 Ed25519 key used to verify the firmware manifest; the private half exists solely

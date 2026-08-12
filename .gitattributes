@@ -1,0 +1,6 @@
+# The vendored Dockerfile must stay byte-identical to its source in the
+# manta-link repo, so that checking it is a plain `diff`. With core.autocrlf=true
+# (the Windows default, and what CI's windows runner uses) a fresh checkout would
+# rewrite it to CRLF, which breaks both the byte comparison and the end-of-line
+# anchored regexes in app/extension_settings.py.
+manta-link/Dockerfile text eol=lf

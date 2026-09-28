@@ -10,9 +10,12 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
 
+import autopilot
+import blueos
 import extension_settings
 import firmware_manifest
 import flash
+import gcs_link
 import kraken
 import provisioning
 from uf2 import is_test_firmware
@@ -50,8 +53,8 @@ class DroneSetupApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Drone Setup")
-        self.geometry("640x820")
-        self.minsize(560, 680)
+        self.geometry("640x940")
+        self.minsize(560, 700)
 
         self.uf2_path = tk.StringVar(value=str(DEFAULT_UF2) if DEFAULT_UF2 else "")
         self.channel = tk.StringVar(value=firmware_manifest.CHANNEL_STABLE)
@@ -65,6 +68,7 @@ class DroneSetupApp(tk.Tk):
 
         self._build_flash_section()
         self._build_pi_section()
+        self._build_gcs_section()
         self._build_log_section()
 
     # -- 1. Flash Pico ---------------------------------------------------
@@ -386,6 +390,8 @@ class DroneSetupApp(tk.Tk):
     def _build_vehicle_controls(self, parent):
         row = ttk.Frame(parent)
         row.pack(fill="x", padx=8, pady=(6, 2))
+        # Also what step 3 talks to. One boat, two of its APIs on different ports,
+        # so the address is asked for once.
         ttk.Label(row, text="Vehicle address:", width=26).pack(side="left")
         ttk.Entry(row, textvariable=self.vehicle_host).pack(side="left", fill="x", expand=True)
 
@@ -399,7 +405,7 @@ class DroneSetupApp(tk.Tk):
         self.provision_button.pack(side="left", padx=6)
         ttk.Label(
             row,
-            text=f"Leave blank to search {', '.join(kraken.DEFAULT_HOSTS)}.",
+            text=f"Leave blank to search {', '.join(blueos.DEFAULT_HOSTS)}.",
         ).pack(side="left", padx=6)
 
         ttk.Label(
@@ -422,7 +428,7 @@ class DroneSetupApp(tk.Tk):
             self._log(f"Reading {host}...")
             extensions = kraken.fetch_installed_extensions(host)
         else:
-            self._log(f"Looking for a vehicle on {', '.join(kraken.DEFAULT_HOSTS)}...")
+            self._log(f"Looking for a vehicle on {', '.join(blueos.DEFAULT_HOSTS)}...")
             host, extensions = kraken.discover_vehicle()
         self._log(f"{host}: {len(extensions)} extension(s) installed.")
         installed = kraken.find_extension(extensions, extension_settings.EXTENSION_IDENTIFIER)
@@ -519,6 +525,166 @@ class DroneSetupApp(tk.Tk):
         except Exception as exc:  # noqa: BLE001 - surface any failure to the log panel
             self._log(f"FAIL - unexpected error provisioning the vehicle: {exc}")
         self.after(0, self._set_vehicle_buttons, "normal")
+
+    # -- 3. QGroundControl link -----------------------------------------------
+    #
+    # The boat listens and the operator dials it, rather than the boat streaming
+    # at an address baked into it at provisioning time. Same threading rule as
+    # everything above: network work on a worker, widgets and dialogs via after().
+
+    def _build_gcs_section(self):
+        frame = ttk.LabelFrame(self, text="3. QGroundControl link (MAVLink endpoints)")
+        frame.pack(fill="x", padx=10, pady=8)
+
+        row = ttk.Frame(frame)
+        row.pack(fill="x", padx=8, pady=(6, 2))
+        self.gcs_audit_button = ttk.Button(
+            row, text="Check QGC link", command=self._start_gcs_audit
+        )
+        self.gcs_audit_button.pack(side="left")
+        self.gcs_provision_button = ttk.Button(
+            row, text="Enable / Repair", command=self._start_gcs_provision
+        )
+        self.gcs_provision_button.pack(side="left", padx=6)
+        ttk.Label(row, text="Uses the vehicle address in step 2.").pack(side="left", padx=6)
+
+        ttk.Label(
+            frame,
+            text=(
+                "Enables GCS Server Link, which listens on 0.0.0.0:14550. One endpoint "
+                "serves the cellular path, the base station, and anything added later, and "
+                "the boat stores no ground station address at all. In QGroundControl, add "
+                f"a UDP link to the boat's address on port {gcs_link.LISTEN_PORT}.\n\n"
+                "Check QGC link changes nothing and is safe on a boat in service. "
+                "Enable / Repair restarts MAVLink Router, which drops every ground station "
+                "connected to this boat. Never do it while the vehicle is under way."
+            ),
+            wraplength=560,
+            justify="left",
+        ).pack(fill="x", padx=8, pady=(2, 8), anchor="w")
+
+    def _set_gcs_buttons(self, state: str):
+        self.gcs_audit_button.config(state=state)
+        self.gcs_provision_button.config(state=state)
+
+    def _audit_gcs_link(self, host: str) -> tuple[str, gcs_link.AuditReport]:
+        """Read the boat's MAVLink endpoints and judge them. Read-only."""
+        if host:
+            self._log(f"Reading MAVLink endpoints on {host}...")
+            endpoints = autopilot.fetch_endpoints(host)
+        else:
+            self._log(f"Looking for a vehicle on {', '.join(blueos.DEFAULT_HOSTS)}...")
+            host, endpoints = autopilot.discover_vehicle()
+        self._log(f"{host}: {len(endpoints)} MAVLink endpoint(s).")
+        return host, gcs_link.audit(endpoints)
+
+    def _log_gcs_report(self, host: str, report: gcs_link.AuditReport):
+        for line in report.lines:
+            self._log(f"  {line}")
+        self._log(f"  {report.summary}")
+        # Said whenever the boat actually answers, even if something else in the
+        # list is wrong: a broken loopback endpoint is a telemetry fault, and the
+        # operator standing in front of the boat still needs the address.
+        if report.reachable:
+            self._log(
+                f"  In QGroundControl, add a UDP link to {gcs_link.qgc_target(host)} to "
+                "reach this boat."
+            )
+        if report.ok:
+            return
+        if report.actions:
+            self._log(f"  Fix: {gcs_link.describe_plan(report)}.")
+        else:
+            # Failures with nothing proposed are the deliberate cases: a link
+            # someone moved, a protected endpoint, a port already taken. Saying
+            # "nothing to do" here would read as "all fine".
+            self._log(
+                "  Nothing here is safe for this tool to change on its own. The findings "
+                "above say what to do in BlueOS."
+            )
+
+    def _start_gcs_audit(self):
+        self._set_gcs_buttons("disabled")
+        threading.Thread(
+            target=self._gcs_audit, args=(self.vehicle_host.get().strip(),), daemon=True
+        ).start()
+
+    def _gcs_audit(self, host: str):
+        try:
+            host, report = self._audit_gcs_link(host)
+            self._log_gcs_report(host, report)
+        except autopilot.AutopilotError as exc:
+            self._log(f"FAIL - {exc}")
+        except Exception as exc:  # noqa: BLE001 - surface any failure to the log panel
+            self._log(f"FAIL - unexpected error reading the vehicle's endpoints: {exc}")
+        self.after(0, self._set_gcs_buttons, "normal")
+
+    def _start_gcs_provision(self):
+        # Audits first, every time. The plan the operator approves has to describe
+        # the boat as it is now, not as the last audit found it.
+        self._set_gcs_buttons("disabled")
+        self._log("Checking the vehicle's endpoints before changing anything...")
+        threading.Thread(
+            target=self._plan_gcs_provision, args=(self.vehicle_host.get().strip(),), daemon=True
+        ).start()
+
+    def _plan_gcs_provision(self, host: str):
+        try:
+            host, report = self._audit_gcs_link(host)
+        except autopilot.AutopilotError as exc:
+            self._log(f"FAIL - {exc}")
+            self.after(0, self._set_gcs_buttons, "normal")
+            return
+        except Exception as exc:  # noqa: BLE001 - surface any failure to the log panel
+            self._log(f"FAIL - unexpected error reading the vehicle's endpoints: {exc}")
+            self.after(0, self._set_gcs_buttons, "normal")
+            return
+        self._log_gcs_report(host, report)
+        self.after(0, self._confirm_gcs_provision, host, report)
+
+    def _confirm_gcs_provision(self, host: str, report: gcs_link.AuditReport):
+        if not report.actions:
+            self._log("Nothing to change. The vehicle was not touched.")
+            self._set_gcs_buttons("normal")
+            return
+
+        if not messagebox.askokcancel(
+            "Drone Setup",
+            f"On {host}:\n\n{gcs_link.describe_plan(report)}.\n\n"
+            "This restarts MAVLink Router. Every ground station connected to this boat "
+            "drops, and QGroundControl does not notice: it holds the dead link open and "
+            "still looks connected, so it has to be disconnected and reconnected by hand.\n\n"
+            "Do not do this while the vehicle is under way.\n\nContinue?",
+            parent=self,
+        ):
+            self._log("Cancelled. The vehicle was not changed.")
+            self._set_gcs_buttons("normal")
+            return
+
+        threading.Thread(target=self._provision_gcs, args=(host, report), daemon=True).start()
+
+    def _provision_gcs(self, host: str, report: gcs_link.AuditReport):
+        try:
+            gcs_link.apply_plan(host, report, self._log)
+            self._log(
+                "  Any QGroundControl that was connected to this boat is now on a dead link "
+                "and will not recover on its own. Disconnect and reconnect it."
+            )
+            # Re-read rather than assume. The API accepting the call is not the
+            # same as the endpoint being there afterwards, and a non-persistent
+            # one would look identical until the next reload.
+            self._log("Re-reading the vehicle to confirm what took...")
+            host, after = self._audit_gcs_link(host)
+            self._log_gcs_report(host, after)
+        except autopilot.AutopilotError as exc:
+            self._log(f"FAIL - {exc}")
+            self._log(
+                "  Click Check QGC link to see where the vehicle stands. BlueOS's own "
+                "Endpoints page makes the same change by hand."
+            )
+        except Exception as exc:  # noqa: BLE001 - surface any failure to the log panel
+            self._log(f"FAIL - unexpected error changing the vehicle's endpoints: {exc}")
+        self.after(0, self._set_gcs_buttons, "normal")
 
     def _labeled_entry(self, parent, label, var, show=None):
         row = ttk.Frame(parent)

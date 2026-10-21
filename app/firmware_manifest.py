@@ -32,8 +32,15 @@ RELEASE_URL_PREFIX = f"https://github.com/{FIRMWARE_REPO}/releases/download/"
 
 # The public half of the signing keypair. Public keys are not secrets: this one is
 # here to be read, and shipping it inside the exe is the whole point. The private
-# half lives only in the FIRMWARE_SIGNING_KEY Actions secret on the private repo.
-SIGNING_PUBLIC_KEY_HEX = "b4a3d7eada0680c07211fbc3b84bffb95732d3162aabf95d0eb39da7505d30b4"
+# half lives only in the FIRMWARE_SIGNING_KEY Actions secret on the firmware repo,
+# whose tools/sign_manifest.py signs with this key and refuses any other.
+SIGNING_PUBLIC_KEY_HEX = "d44592fa0503b9fd735e137ff162ce3f876281eba2335968a1216191d2366fc8"
+
+# The key rotated out on 2026-08-12, when its private half was lost. Never trusted:
+# it is here only so a list still signed with it is reported as exactly that, rather
+# than as one Caddis did not sign. The next firmware publish re-signs the list.
+# TODO (added 2026-10-21): delete once the published manifest.json.sig is the new key's.
+RETIRED_SIGNING_PUBLIC_KEY_HEX = "b4a3d7eada0680c07211fbc3b84bffb95732d3162aabf95d0eb39da7505d30b4"
 
 # "experimental" is a prerelease *production* build: same firmware, published before
 # it is blessed for the fleet. It is NOT the HIL test image, which is never published
@@ -120,6 +127,16 @@ def _load_public_key(hex_key: str) -> Ed25519PublicKey:
         raise ManifestError(f"Built-in signing key is not a valid Ed25519 key: {exc}") from exc
 
 
+def _is_signed_by(hex_key: str, raw: bytes, signature: bytes) -> bool:
+    from cryptography.exceptions import InvalidSignature
+
+    try:
+        _load_public_key(hex_key).verify(signature, raw)
+    except InvalidSignature:
+        return False
+    return True
+
+
 def verify_manifest(raw: bytes, signature: bytes) -> None:
     """Raise ManifestError unless `signature` is our signature over exactly `raw`.
 
@@ -134,18 +151,24 @@ def verify_manifest(raw: bytes, signature: bytes) -> None:
             "signature."
         )
 
-    from cryptography.exceptions import InvalidSignature
+    if _is_signed_by(SIGNING_PUBLIC_KEY_HEX, raw, signature):
+        return
 
-    key = _load_public_key(SIGNING_PUBLIC_KEY_HEX)
-    try:
-        key.verify(signature, raw)
-    except InvalidSignature as exc:
+    if _is_signed_by(RETIRED_SIGNING_PUBLIC_KEY_HEX, raw, signature):
         raise ManifestError(
-            "The published firmware list failed its signature check, so it was not "
-            "used. Either it was altered in transit or it was not signed by Caddis. "
-            "Do not work around this: use 'Load .uf2 file...' with an image you "
-            "already trust, and report it."
-        ) from exc
+            "The published firmware list is still signed with Caddis's old signing "
+            "key, which this DroneSetup no longer trusts, so it was not used. The next "
+            "firmware release re-signs it. Until then, use 'Load .uf2 file...' to "
+            "flash a file you already have. If a firmware release has already gone "
+            "out, report this."
+        )
+
+    raise ManifestError(
+        "The published firmware list failed its signature check, so it was not "
+        "used. Either it was altered in transit or it was not signed by Caddis. "
+        "Do not work around this: use 'Load .uf2 file...' with an image you "
+        "already trust, and report it."
+    )
 
 
 def _require(condition: bool, message: str) -> None:

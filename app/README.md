@@ -90,7 +90,9 @@ internal firmware repo.
 1. The manifest is signed with an Ed25519 key whose public half is compiled into the
    app (`firmware_manifest.SIGNING_PUBLIC_KEY_HEX`). A manifest that fails that check
    is refused outright, and the app says so rather than falling back to it. HTTPS
-   alone would only prove who answered the request, not who wrote the file.
+   alone would only prove who answered the request, not who wrote the file. The
+   key was rotated on 2026-08-12 after the old private half was lost; a list still
+   signed with the old key is refused too, with a message saying that is why.
 2. Every field is validated after the signature passes — a valid signature proves the
    bytes are ours, not that whatever produced them was working. Download URLs must
    point at our own release storage, and versions must be a plain `x.y.z`, which means

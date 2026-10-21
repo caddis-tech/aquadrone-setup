@@ -120,6 +120,58 @@ def test_signature_covers_the_exact_bytes_not_the_parsed_document(signer):
         firmware_manifest.verify_manifest(reindented, signer(raw))
 
 
+# -- The key rotation -----------------------------------------------------------
+#
+# The signing key was rotated on 2026-08-12 after its private half was lost. These run
+# against the real built-in keys, with no signer fixture, and against the list that was
+# published before then, copied here byte for byte with its real signature.
+
+LIST_SIGNED_WITH_THE_RETIRED_KEY = (
+    b'{\n'
+    b'  "schema": 1,\n'
+    b'  "builds": [\n'
+    b'    {\n'
+    b'      "version": "1.2.0",\n'
+    b'      "channel": "stable",\n'
+    b'      "url": "https://github.com/caddis-tech/aquadrone-pico-firmware/releases/download/'
+    b'v1.2.0/AquaD_Pico_v1.2.0.uf2",\n'
+    b'      "sha256": "aa155feabdbcd773085e4dfd14fbce1f67d52c5248793413de49f07b8b622b36",\n'
+    b'      "size": 205312,\n'
+    b'      "released": "2026-07-30T21:18:04Z"\n'
+    b'    }\n'
+    b'  ]\n'
+    b'}\n'
+)
+RETIRED_KEY_SIGNATURE = bytes.fromhex(
+    "a24da13ce3e2f88f38a99252e30d11743591acd4527397cea2fe6ba8b7cbd920"
+    "f30b97dc8a121c64eb20e71446ebe3dc306f9d134aec11523982f911e72b5c00"
+)
+
+
+def test_a_list_signed_with_the_retired_key_is_refused_and_says_why():
+    # Refused, because the retired key is never trusted. Said plainly, because the
+    # generic wording, "not signed by Caddis", would be false and would alarm a tech.
+    with pytest.raises(firmware_manifest.ManifestError, match="old signing key"):
+        firmware_manifest.verify_manifest(
+            LIST_SIGNED_WITH_THE_RETIRED_KEY, RETIRED_KEY_SIGNATURE
+        )
+
+
+def test_the_retired_key_vouches_for_nothing_it_did_not_sign():
+    tampered = LIST_SIGNED_WITH_THE_RETIRED_KEY.replace(b"1.2.0", b"9.9.9")
+
+    with pytest.raises(firmware_manifest.ManifestError, match="signature check"):
+        firmware_manifest.verify_manifest(tampered, RETIRED_KEY_SIGNATURE)
+
+
+def test_the_built_in_key_is_a_working_key_that_refuses_strangers():
+    # A garbled key constant would surface here as "not a valid Ed25519 key" instead.
+    raw = _manifest(_entry())
+
+    with pytest.raises(firmware_manifest.ManifestError, match="signature check"):
+        firmware_manifest.verify_manifest(raw, Ed25519PrivateKey.generate().sign(raw))
+
+
 # -- Parsing ------------------------------------------------------------------
 #
 # A good signature proves the bytes are ours. It does not prove whatever produced

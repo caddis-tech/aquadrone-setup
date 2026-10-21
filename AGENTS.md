@@ -35,7 +35,8 @@ The released exe is the product: technicians download `/releases/latest` and run
 publish from `main` and are named from `VERSION`. A merge to `main` touching `app/`,
 `DroneSetup.spec`, or `VERSION` re-uploads the exe to the existing release, so technicians get
 it at once; only a `VERSION` bump creates a new release. So a merge into `main` touching those
-files is a release, and an assistant never merges one.
+files is a release, and an assistant merges one only when the person explicitly asks, saying
+first that it reaches technicians.
 
 `manta-link/Dockerfile` is a byte-identical copy of the file in the `manta-link` repo. Update it
 only by copying that file over, and never annotate it: checking it is a plain `diff`.

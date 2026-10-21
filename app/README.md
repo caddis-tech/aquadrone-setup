@@ -26,8 +26,11 @@ The window has two steps, top to bottom:
 1. **Flash Pico** — get a `.uf2`, then click **Flash Pico**. Put the Pico in
    BOOTSEL mode (hold the white button while plugging it in) when prompted in
    the log. The app copies the firmware over, waits for the Pico to reboot, and
-   reads back a few telemetry records over serial to confirm it's actually
-   logging data before calling it a pass.
+   reads its serial output up to the first telemetry reading to confirm it's
+   actually logging data before calling it a pass. Firmware 2.1 asks for the time
+   before its first reading, and a production image waits up to three minutes for
+   the drone's Pi to answer, so the app answers from this computer's clock and the
+   check takes about 20 seconds.
 
    Two ways to get the `.uf2`:
 

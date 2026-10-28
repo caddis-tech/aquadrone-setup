@@ -340,9 +340,10 @@ class DroneSetupApp(tk.Tk):
         ttk.Label(
             frame,
             text=(
-                "Manual path, still the only way to deliver a token. Paste the "
-                "fields below, with the generated JSON, into BlueOS -> Extensions "
-                "-> INSTALLED -> + ."
+                "Paste the unit's token (caddis-api admin -> Devices) into the Token "
+                "box below and Install / Repair sends it to the boat. The rest is the "
+                "manual path: paste the fields below, with the generated JSON, into "
+                "BlueOS -> Extensions -> INSTALLED -> + ."
             ),
             wraplength=560,
             justify="left",
@@ -452,16 +453,25 @@ class DroneSetupApp(tk.Tk):
         self.after(0, self._set_vehicle_buttons, "normal")
 
     def _start_provision(self):
+        # A bad paste is refused before the boat is contacted at all. The message
+        # names the problem and never the value.
+        try:
+            token = extension_settings.pasted_token(self.token.get())
+        except ValueError as exc:
+            messagebox.showerror("Drone Setup", str(exc))
+            return
         # Audits first, every time, rather than acting on whatever the last audit
         # found: the boat may have been changed since, and the plan the tech is
         # about to approve has to describe the vehicle as it is now.
         self._set_vehicle_buttons("disabled")
         self._log("Checking the vehicle before changing anything...")
         threading.Thread(
-            target=self._plan_provision, args=(self.vehicle_host.get().strip(),), daemon=True
+            target=self._plan_provision,
+            args=(self.vehicle_host.get().strip(), token),
+            daemon=True,
         ).start()
 
-    def _plan_provision(self, host: str):
+    def _plan_provision(self, host: str, token: str | None):
         try:
             host, report = self._audit_vehicle(host)
         except kraken.KrakenError as exc:
@@ -473,17 +483,18 @@ class DroneSetupApp(tk.Tk):
             self.after(0, self._set_vehicle_buttons, "normal")
             return
         self._log_report(report)
-        self.after(0, self._confirm_provision, host, report)
+        self.after(0, self._confirm_provision, host, provisioning.with_token(report, token))
 
     def _confirm_provision(self, host: str, report: provisioning.AuditReport):
-        if report.ok:
+        # The plan, not the findings: a pasted token gives a healthy boat work to do.
+        if not report.actions:
             self._log("Nothing to do. The vehicle was not changed.")
             self._set_vehicle_buttons("normal")
             return
 
         if not messagebox.askokcancel(
             "Drone Setup",
-            f"On {host}:\n\n{provisioning.describe_actions(report.actions)}.\n\n"
+            f"On {host}:\n\n{provisioning.describe_plan(report)}.\n\n"
             "This changes the vehicle and restarts the extension. Continue?",
             parent=self,
         ):
@@ -497,9 +508,10 @@ class DroneSetupApp(tk.Tk):
         try:
             provisioning.apply_plan(host, report, self._log)
             self._log(
-                "  MANTA Link reads its token from the extension's data volume or its "
-                "Env. This tool does not deliver tokens: if the vehicle reports 'no API "
-                "token configured', use the settings JSON below."
+                "  MANTA Link reads its token from the .env in its data volume first and "
+                "its Env second, and logs the fingerprint of the one it loads. If the "
+                "vehicle reports 'no API token configured', paste the unit's token into "
+                "the Token box and run Install / Repair again."
             )
             # Re-read the boat rather than assume. Kraken accepting the call is not
             # the same as the permissions having taken, and that gap is the whole

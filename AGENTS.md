@@ -32,7 +32,8 @@ broken build shows in review.
 ## How it ships
 
 The released exe is the product: technicians download `/releases/latest` and run it. Releases
-publish from `main` and are named from `VERSION`. A merge to `main` touching `app/`,
+publish from `main` and are tagged `v` plus `VERSION`, which itself has no `v`; 1.2.0 and
+earlier kept their tags without one. A merge to `main` touching `app/`,
 `DroneSetup.spec`, or `VERSION` re-uploads the exe to the existing release, so technicians get
 it at once; only a `VERSION` bump creates a new release. So a merge into `main` touching those
 files is a release, and an assistant merges one only when the person explicitly asks, saying

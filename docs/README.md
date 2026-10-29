@@ -121,8 +121,15 @@ reads the boat and changes nothing. If it reports anything wrong, **Install /
 Repair** shows what it intends to do, asks, and then does it, always sending
 the complete permissions block, because Kraken has no partial update.
 
-**A new boat** needs its token, and the app does not deliver tokens over the
-API. Use the manual path below, which does it in one step:
+**A new boat** needs its token: paste the unit's token from Step 2 into the
+**Token** box in the same section, then click **Install / Repair**. The plan it
+shows before you agree says the device token will be set and names it only by
+its fingerprint, the first 8 characters of its SHA-256. MANTA Link logs the same
+8 characters when it loads the token, so the two can be matched in its log. A
+boat that already has a token in the `.env` in MANTA Link's data volume keeps
+using that one, because MANTA Link reads the file first.
+
+The manual path below does the same through BlueOS's own page:
 
 1. Same section, lower half: paste in the token from Step 2 and click
    **Generate Settings JSON**. It is copied to the clipboard and shown in the

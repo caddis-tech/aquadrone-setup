@@ -11,7 +11,10 @@ these run with no hardware and the audit itself is safe on a boat in service.
 """
 from __future__ import annotations
 
+import io
 import json
+import urllib.error
+import urllib.request
 
 import extension_settings
 import kraken
@@ -391,3 +394,144 @@ def test_the_tech_is_told_what_they_are_authorising():
 
 def test_nothing_to_do_says_so():
     assert provisioning.describe_actions(()) == "Nothing to do"
+
+
+# -- A pasted token ----------------------------------------------------------
+
+# Made up, and shaped like a caddis-api device token: 40 hex characters.
+PASTED_TOKEN = "0123456789abcdef0123456789abcdef01234567"
+# Every character validate_token() allows, so the redaction test below proves
+# that none of them ends a redaction early and leaks the rest.
+EVERY_ALLOWED_CHARACTER = "Made.Up_Token~With+Every/Allowed-Char0123456789"
+PROD_URL = "CADDIS_API_URL=https://api.caddistech.com"
+
+
+def _healthy_boat_with_env(env: list[str]) -> kraken.InstalledExtension:
+    settings = {"Env": env, **extension_settings.read_docker_permissions()}
+    return _boat(user_permissions_raw=json.dumps(settings))
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{}, {"tag": "0.1.0"}, {"enabled": False}, {"tag": "0.1.0", "enabled": False}],
+    ids=["nothing", "update", "enable", "update-and-enable"],
+)
+def test_a_pasted_token_turns_a_plan_with_no_body_into_a_reinstall(overrides):
+    # Update and enable take no body, so neither could carry the token.
+    report = provisioning.with_token(provisioning.audit(_boat(**overrides)), PASTED_TOKEN)
+
+    assert report.actions == (provisioning.ACTION_REINSTALL,)
+
+
+def test_a_pasted_token_rides_an_install_the_plan_already_had():
+    report = provisioning.with_token(provisioning.audit(None), PASTED_TOKEN)
+
+    assert report.actions == (provisioning.ACTION_INSTALL,)
+
+
+def test_with_an_empty_token_box_the_plan_is_the_audits_own():
+    report = provisioning.audit(_boat(tag="0.1.0"))
+
+    assert provisioning.with_token(report, extension_settings.pasted_token("")) is report
+
+
+def test_a_pasted_token_replaces_the_boats_and_keeps_its_other_env(fake_kraken):
+    boat = _healthy_boat_with_env(["TZ=America/New_York", "CADDIS_API_TOKEN=s3cret"])
+
+    provisioning.apply_plan(
+        "blueos.local",
+        provisioning.with_token(provisioning.audit(boat), PASTED_TOKEN),
+        lambda _: None,
+    )
+
+    (call, _, source) = fake_kraken.calls[0]
+    assert call == "install"
+    assert json.loads(source["user_permissions"])["Env"] == [
+        "TZ=America/New_York",
+        f"CADDIS_API_TOKEN={PASTED_TOKEN}",
+        PROD_URL,
+    ]
+
+
+def test_with_an_empty_token_box_a_reinstall_carries_the_boats_env_unchanged(fake_kraken):
+    env = ["TZ=America/New_York", "CADDIS_API_TOKEN=s3cret"]
+    broken = _boat(user_permissions_raw=json.dumps({"Env": env, "HostConfig": {}}))
+
+    provisioning.apply_plan(
+        "blueos.local",
+        provisioning.with_token(provisioning.audit(broken), extension_settings.pasted_token("  ")),
+        lambda _: None,
+    )
+
+    (_, _, source) = fake_kraken.calls[0]
+    assert json.loads(source["user_permissions"])["Env"] == [*env, PROD_URL]
+
+
+def test_the_plan_shows_the_tokens_fingerprint_and_never_the_token():
+    report = provisioning.with_token(provisioning.audit(_boat()), PASTED_TOKEN)
+
+    described = provisioning.describe_plan(report)
+
+    assert "device token" in described
+    assert extension_settings.token_fingerprint(PASTED_TOKEN) in described
+    assert PASTED_TOKEN not in described
+
+
+def test_a_plan_without_a_token_says_nothing_about_one():
+    report = provisioning.audit(_boat(tag="0.1.0"))
+
+    assert provisioning.describe_plan(report) == provisioning.describe_actions(report.actions)
+
+
+def test_carrying_out_a_plan_logs_the_tokens_fingerprint_and_never_the_token(fake_kraken):
+    logged = []
+
+    provisioning.apply_plan(
+        "blueos.local",
+        provisioning.with_token(provisioning.audit(None), PASTED_TOKEN),
+        logged.append,
+    )
+
+    assert PASTED_TOKEN not in " ".join(logged)
+    assert any(extension_settings.token_fingerprint(PASTED_TOKEN) in line for line in logged)
+
+
+def test_a_report_carrying_a_token_does_not_show_it_when_printed():
+    # A report can reach a log line or a traceback through its repr.
+    report = provisioning.with_token(provisioning.audit(_boat()), PASTED_TOKEN)
+
+    assert PASTED_TOKEN not in repr(report)
+
+
+def _fastapi_echo(sent: bytes) -> str:
+    """A FastAPI 422, which quotes the rejected body back inside its own JSON."""
+    return json.dumps(
+        {"detail": [{"type": "value_error", "loc": ["body"], "input": json.loads(sent)}]}
+    )
+
+
+def _plain_echo(sent: bytes) -> str:
+    return f"Failed to install extension from {sent.decode()}"
+
+
+@pytest.mark.parametrize("echo", [_fastapi_echo, _plain_echo], ids=["fastapi-json", "plain-text"])
+@pytest.mark.parametrize(
+    "token", [PASTED_TOKEN, EVERY_ALLOWED_CHARACTER], ids=["hex", "every-allowed-character"]
+)
+def test_an_install_error_quoting_the_request_has_the_token_redacted(monkeypatch, echo, token):
+    def reject(request, timeout=None):
+        echoed = io.BytesIO(echo(request.data).encode())
+        raise urllib.error.HTTPError(request.full_url, 422, "Unprocessable Entity", {}, echoed)
+
+    monkeypatch.setattr(urllib.request, "urlopen", reject)
+    report = provisioning.with_token(
+        provisioning.audit(None), extension_settings.validate_token(token)
+    )
+
+    with pytest.raises(kraken.KrakenError) as caught:
+        provisioning.apply_plan("blueos.local", report, lambda _: None)
+
+    message = str(caught.value)
+    assert token not in message
+    # Redacted up to the quote that closes the Env entry, so no tail of it leaks.
+    assert f'CADDIS_API_TOKEN={kraken.REDACTED}\\"' in message

@@ -52,11 +52,24 @@ The window has two steps, top to bottom:
      asks, and then does it. It always sends the complete permissions block:
      Kraken has no partial update, so anything left out is access the container
      loses. Anything a boat already had in its `Env`, including its token, is
-     carried back over unread.
-   - **Generate Settings JSON** is the manual path, and still the only way to
-     deliver a token: paste the unit's caddis-api token (from caddis-api admin
-     → Devices), click the button, and paste the result with the
-     Identifier/Name/image/tag into BlueOS → Extensions → INSTALLED → **+**.
+     carried back over unread, unless a token is pasted in the **Token** box.
+   - **Token** is how a boat gets its token. Paste the unit's caddis-api token
+     (from caddis-api admin → Devices) before clicking **Install / Repair**, and
+     it goes to the boat in the install request, replacing any token already in
+     the extension's settings, so a fresh boat needs no browser step. Kraken's
+     version-only update and enable carry no settings, so with a token pasted
+     the plan is always an install or a full reinstall. The plan shown before
+     you agree names the token only by its fingerprint: the first 8 characters
+     of its SHA-256, which is what MANTA Link logs when it loads a token, so the
+     two can be matched later. The token itself is never shown or logged. A
+     pasted value holding a space, an `=`, or any character a caddis-api token
+     never has is refused before anything is sent. Leave the box empty and the
+     boat keeps the token it had. MANTA Link reads the `.env` in its data volume
+     before its `Env`, so a boat with a token in that file keeps using it; its
+     log shows which fingerprint it loaded.
+   - **Generate Settings JSON** is the manual path: paste the token, click the
+     button, and paste the result with the Identifier/Name/image/tag into
+     BlueOS → Extensions → INSTALLED → **+**.
 
    **Why the audit matters.** Kraken does not fall back to the image's own
    `permissions` LABEL. A boat installed with Custom settings left empty stores

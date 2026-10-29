@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 
 import extension_settings
 import kraken
@@ -63,6 +63,10 @@ class AuditReport:
     extension: InstalledExtension | None
     findings: tuple[Finding, ...]
     actions: tuple[str, ...]
+    # The token the tech pasted, set by with_token(). Carried on the report so the
+    # plan that runs is the one the tech agreed to, and kept out of repr so a
+    # printed report or a traceback cannot show it.
+    device_token: str | None = field(default=None, repr=False)
 
     @property
     def ok(self) -> bool:
@@ -270,6 +274,21 @@ def _actions_for(findings: tuple[Finding, ...]) -> tuple[str, ...]:
     return tuple(actions)
 
 
+def with_token(report: AuditReport, token: str | None) -> AuditReport:
+    """The report with its plan changed to deliver a pasted token. Pure.
+
+    Only the install request has a body to carry a token: Kraken's version-only
+    update and enable take none. So a plan that would do nothing, update or enable
+    becomes a reinstall, whose body also carries the current tag and leaves the
+    extension enabled. No token, and the report comes back unchanged.
+    """
+    if token is None:
+        return report
+    has_body = ACTION_INSTALL in report.actions or ACTION_REINSTALL in report.actions
+    actions = report.actions if has_body else (ACTION_REINSTALL,)
+    return replace(report, actions=actions, device_token=token)
+
+
 def describe_actions(actions: tuple[str, ...]) -> str:
     """What the tech is about to authorise, in plain words."""
     tag = extension_settings.read_extension_version()
@@ -285,6 +304,22 @@ def describe_actions(actions: tuple[str, ...]) -> str:
     return "; ".join(wording[action] for action in actions) if actions else "Nothing to do"
 
 
+def describe_plan(report: AuditReport) -> str:
+    """What Install / Repair is about to do, token included, for the tech to agree to.
+
+    Names the token by its fingerprint only, the same one MANTA Link logs when it
+    loads a token, so the tech can match the two later.
+    """
+    described = describe_actions(report.actions)
+    if report.device_token is None:
+        return described
+    fingerprint = extension_settings.token_fingerprint(report.device_token)
+    return (
+        f"{described}; set the device token (fingerprint {fingerprint}), replacing "
+        "any token in the extension's settings"
+    )
+
+
 LogCallback = Callable[[str], None]
 
 
@@ -293,8 +328,8 @@ def _existing_env(extension: InstalledExtension | None, log: LogCallback) -> lis
 
     Kraken has no partial update, so anything not carried forward is lost, and on
     a hand-provisioned boat that includes its API token. The count is logged and
-    the values are not: this is the one place a credential passes through, and it
-    passes through unread.
+    the values are not: this is where the boat's own credential passes through,
+    and it passes through unread.
     """
     if extension is None:
         return []
@@ -325,9 +360,11 @@ def apply_plan(host: str, report: AuditReport, log: LogCallback) -> None:
     for action in report.actions:
         if action in (ACTION_INSTALL, ACTION_REINSTALL):
             log(f"  {describe_actions((action,))}. Pulling the image can take a few minutes...")
-            source = extension_settings.build_extension_source(
-                _existing_env(report.extension, log)
-            )
+            existing_env = _existing_env(report.extension, log)
+            if report.device_token is not None:
+                fingerprint = extension_settings.token_fingerprint(report.device_token)
+                log(f"  Setting the device token, fingerprint {fingerprint}.")
+            source = extension_settings.build_extension_source(existing_env, report.device_token)
             kraken.install_extension(host, source)
         elif action == ACTION_UPDATE:
             log(f"  Updating {identifier} to {tag}...")

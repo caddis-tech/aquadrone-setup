@@ -15,8 +15,8 @@ name: Drone Setup Release
 # down to read-only for fork PRs regardless, but the explicit `if` on the
 # publish step makes the intent obvious without relying on it alone.
 #
-# The release is named from VERSION and the create step is skipped when that tag
-# already exists, so an ordinary merge re-uploads the asset and only a VERSION
+# The release is tagged v plus VERSION and the create step is skipped when that
+# tag already exists, so an ordinary merge re-uploads the asset and only a VERSION
 # bump mints a new release.
 
 on:
@@ -92,8 +92,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $version = "${{ steps.v.outputs.version }}"
+          $tag = "v$version"
+          # 1.2.0 and earlier were tagged without the v, and tags are never renamed.
+          # While VERSION is one of those, re-upload to it rather than mint a
+          # v-tagged duplicate of a release that already exists.
+          # TODO (added 2026-10-29): drop this once VERSION is past 1.2.0.
           gh release view $version *> $null
-          if ($LASTEXITCODE -ne 0) {
-            gh release create $version --title "Drone Setup $version" --notes "Automated build from ${{ github.sha }}."
+          if ($LASTEXITCODE -eq 0) {
+            $tag = $version
+          } else {
+            gh release view $tag *> $null
+            if ($LASTEXITCODE -ne 0) {
+              gh release create $tag --title "Drone Setup $version" --notes "Automated build from ${{ github.sha }}."
+            }
           }
-          gh release upload $version dist/DroneSetup.exe --clobber
+          gh release upload $tag dist/DroneSetup.exe --clobber

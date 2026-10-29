@@ -44,6 +44,15 @@ LEGACY_REQUIRED_KEYS = ("firmware_version", "water_temperature", "ph", "uv_banks
 # answers from this computer's clock. The wire format is boot_time.h's.
 TIME_REQUEST = "TIME?"
 
+# What the board prints when it accepts an answer. A board that printed it and then
+# asked again reset in between; it did not refuse this computer's clock.
+TIME_ACCEPTED = "Boot time synced"
+
+# A Debug image writes the same records as a Release one and is told apart only by
+# the file its banner names, debug_logN.txt rather than dataN.txt. The banner can
+# go by before the port opens, so this catches a Debug image only when it is seen.
+DEBUG_IMAGE_BANNER = "logging to debug_log"
+
 # Serial timeout, per byte when reading and per call when writing. Short, so a quiet
 # port hands control back to the deadline in read_telemetry_lines() every second.
 _PORT_TIMEOUT_S = 1.0
@@ -161,6 +170,7 @@ class LoggingCheckResult:
     firmware_version: str | None
     raw_lines: list[str] = field(default_factory=list)
     error: str | None = None
+    warning: str | None = None
 
 
 def _parse_record(text: str) -> dict[str, Any] | None:
@@ -205,6 +215,7 @@ def evaluate_telemetry(raw_lines: list[str]) -> LoggingCheckResult:
     board -> hard fail with the offending keys.
     """
     firmware_version = None
+    card_warning = None
     saw_reading = False
     for text in raw_lines:
         record = _parse_record(text)
@@ -232,16 +243,49 @@ def evaluate_telemetry(raw_lines: list[str]) -> LoggingCheckResult:
                 False, record.get("firmware_version"), raw_lines, f"Record missing keys: {missing}"
             )
         firmware_version = record.get("firmware_version")
+        card_warning = _card_warning(record)
         saw_reading = True
     if not saw_reading:
         return _no_readings_result(raw_lines)
-    return LoggingCheckResult(True, firmware_version, raw_lines)
+    # After the loop, so a HIL board is still reported as one whatever its banner says.
+    if any(DEBUG_IMAGE_BANNER in text for text in raw_lines):
+        return LoggingCheckResult(
+            False, firmware_version, raw_lines,
+            "Debug firmware on this board: its banner names debug_logN.txt, not "
+            "dataN.txt. A Debug image waits only 15 s for the drone's Pi to send the "
+            "time, so a drone running it can log a whole run with no dates. Flash the "
+            "Release image, then power-cycle the board.",
+        )
+    return LoggingCheckResult(True, firmware_version, raw_lines, warning=card_warning)
+
+
+def _card_warning(record: dict[str, Any]) -> str | None:
+    """What a 2.1 reading says is wrong with the SD card, or None. Older records do
+    not report the card, so they never warn.
+
+    A warning rather than a failure: 2.1 keeps logging to serial without its card,
+    and a bench flash may have no card in, but a drone must not leave without one.
+    """
+    if (
+        record.get("sd_ready") != 0
+        and not record.get("sd_writes_failed")
+        and not record.get("sd_mounts_failed")
+    ):
+        return None
+    return (
+        f"the board reports SD card trouble (sd_ready {record.get('sd_ready')}, "
+        f"sd_writes_failed {record.get('sd_writes_failed')}, sd_mounts_failed "
+        f"{record.get('sd_mounts_failed')}). Put in an empty, freshly formatted card "
+        "and check again before this board goes on a drone."
+    )
 
 
 def _no_readings_result(raw_lines: list[str]) -> LoggingCheckResult:
-    # A board that took our answer asks once. One still asking did not accept it,
-    # which on a working board means this computer's clock is outside 2025 to 2100.
-    if raw_lines.count(TIME_REQUEST) > 1:
+    # A board that took our answer asks once and says it synced. One still asking
+    # without saying so did not accept it, which on a working board means this
+    # computer's clock is outside 2025 to 2100.
+    synced = any(text.startswith(TIME_ACCEPTED) for text in raw_lines)
+    if raw_lines.count(TIME_REQUEST) > 1 and not synced:
         error = (
             "The board kept asking for the time (TIME?) and did not accept this "
             "computer's answer, so it had not started logging. Check this computer's "
@@ -293,7 +337,10 @@ def describe_outcome(
     Pure, so the wording of both cases is testable without a Pico.
     """
     if result.ok:
-        return True, f"PASS - Pico is logging data. firmware_version: {result.firmware_version}"
+        message = f"PASS - Pico is logging data. firmware_version: {result.firmware_version}"
+        if result.warning:
+            message += f". WARNING: {result.warning}"
+        return True, message
 
     if flashed_test_firmware and HIL_MARKER in (result.firmware_version or ""):
         return True, (

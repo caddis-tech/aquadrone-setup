@@ -21,9 +21,9 @@ def fake_comports(monkeypatch):
     return _set
 
 
-def _valid_record(fw="1.2.3"):
+def _valid_record(fw="1.2.3", **changes):
     """A reading as firmware 2.1 writes it: the example line in the firmware repo's
-    docs/flashing-and-preflight.md, with only the version swapped."""
+    docs/flashing-and-preflight.md, with the version and any `changes` swapped in."""
     return json.dumps(
         {
             "type": "reading", "firmware_version": fw, "ms_since_boot": 4000,
@@ -33,6 +33,7 @@ def _valid_record(fw="1.2.3"):
             "temp_fault": False, "temp_code": "0x28ff640e2f1703", "temperature": 28.149,
             "uv_fault": False, "uv_present": True, "uv_counts": 560, "uv_mv": 451,
             "uv_index": 3, "uv_saturated": False,
+            **changes,
         },
         separators=(",", ":"),
     )
@@ -198,6 +199,45 @@ def test_a_board_still_asking_for_the_time_says_so():
     assert "date and time" in (result.error or "")
 
 
+def test_a_board_that_asked_once_is_not_blamed_on_the_clock():
+    # Every 2.1 board asks once, so one TIME? and no reading is some other failure,
+    # and "check the clock" would send the tech the wrong way.
+    result = flash.evaluate_telemetry([*_STARTUP_NOISE, _boot_record()])
+
+    assert not result.ok
+    assert "date and time" not in (result.error or "")
+
+
+def test_a_board_that_synced_then_reset_is_not_blamed_on_the_clock():
+    # It took the answer, then booted again and asked again: a reset, not a refusal.
+    result = flash.evaluate_telemetry([
+        "=== banner ===", "TIME?", "Boot time synced: epoch 1754424792500 ms at 2041 ms uptime",
+        "=== banner ===", "TIME?",
+    ])
+
+    assert not result.ok
+    assert "date and time" not in (result.error or "")
+
+
+_DEBUG_BANNER = "=== Aquadrone firmware 1.2.3: logging to debug_logN.txt and serial ==="
+
+
+def test_fails_on_a_debug_image_whose_banner_was_seen():
+    # Its records are a Release image's. The banner is the only tell, and the firmware's
+    # own preflight says to check it before a board goes on a boat.
+    result = flash.evaluate_telemetry([_DEBUG_BANNER, "TIME?", _valid_record()])
+
+    assert not result.ok
+    assert "debug firmware" in (result.error or "").lower()
+
+
+def test_a_hil_board_is_reported_as_hil_whatever_its_banner_says():
+    result = flash.evaluate_telemetry([_DEBUG_BANNER, _valid_record(fw="1.2.3+HIL")])
+
+    assert not result.ok
+    assert "test firmware" in (result.error or "").lower()
+
+
 def test_production_firmware_still_passes():
     # The guard above must not reject anything that merely mentions a suffix-free
     # version. Cheap to state, and it is the case every real flash takes.
@@ -306,6 +346,40 @@ def test_a_production_flash_still_passes():
 
     assert went_as_intended
     assert message.startswith("PASS")
+
+
+@pytest.mark.parametrize(
+    "card",
+    [{"sd_ready": 0}, {"sd_writes_failed": 2}, {"sd_mounts_failed": 1}],
+    ids=["no card ready", "writes failed", "mounts failed"],
+)
+def test_a_reading_that_reports_card_trouble_passes_with_a_warning(card):
+    # 2.1 keeps logging to serial without its card, so the reading alone looks
+    # healthy. A bench flash may have no card in, so this warns rather than fails.
+    result = flash.evaluate_telemetry([_valid_record(**card)])
+
+    went_as_intended, message = flash.describe_outcome(result, flashed_test_firmware=False)
+
+    assert went_as_intended
+    assert message.startswith("PASS")
+    assert "WARNING" in message
+    assert "SD card" in message
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        _valid_record(),
+        '{"firmware_version":"1.2.0","water_temperature":12.3,"ph":7.1,"uv_banks":[]}',
+    ],
+    ids=["healthy card", "record that does not report the card"],
+)
+def test_no_warning_without_card_trouble(record):
+    _, message = flash.describe_outcome(
+        flash.evaluate_telemetry([record]), flashed_test_firmware=False
+    )
+
+    assert "WARNING" not in message
 
 
 def test_production_firmware_flashed_while_expecting_a_test_image_still_passes():

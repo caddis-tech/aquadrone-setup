@@ -128,10 +128,13 @@ def _load_public_key(hex_key: str) -> Ed25519PublicKey:
 
 
 def _is_signed_by(hex_key: str, raw: bytes, signature: bytes) -> bool:
+    # Loaded before the import below, so a missing package gets _load_public_key()'s
+    # explanation rather than a bare ImportError.
+    key = _load_public_key(hex_key)
     from cryptography.exceptions import InvalidSignature
 
     try:
-        _load_public_key(hex_key).verify(signature, raw)
+        key.verify(signature, raw)
     except InvalidSignature:
         return False
     return True

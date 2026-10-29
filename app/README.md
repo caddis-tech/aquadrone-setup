@@ -30,7 +30,9 @@ The window has two steps, top to bottom:
    actually logging data before calling it a pass. Firmware 2.1 asks for the time
    before its first reading, and a production image waits up to three minutes for
    the drone's Pi to answer, so the app answers from this computer's clock and the
-   check takes about 20 seconds.
+   check takes about 20 seconds. A Debug image fails the check when its banner
+   (`debug_logN.txt`) is seen, and a pass carries a warning when the reading says
+   the SD card is not working.
 
    Two ways to get the `.uf2`:
 

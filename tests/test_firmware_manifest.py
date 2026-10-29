@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import json
+import sys
 
 import firmware_manifest
 import pytest
@@ -170,6 +171,18 @@ def test_the_built_in_key_is_a_working_key_that_refuses_strangers():
 
     with pytest.raises(firmware_manifest.ManifestError, match="signature check"):
         firmware_manifest.verify_manifest(raw, Ed25519PrivateKey.generate().sign(raw))
+
+
+def test_a_missing_cryptography_package_is_explained(monkeypatch):
+    # Someone running from an older venv gets the install command, not an ImportError.
+    # None in sys.modules makes importing that module fail as if it were not installed.
+    monkeypatch.setitem(sys.modules, "cryptography.exceptions", None)
+    monkeypatch.setitem(sys.modules, "cryptography.hazmat.primitives.asymmetric.ed25519", None)
+
+    with pytest.raises(firmware_manifest.ManifestError, match="not installed"):
+        firmware_manifest.verify_manifest(
+            _manifest(_entry()), bytes(firmware_manifest.SIGNATURE_LENGTH)
+        )
 
 
 # -- Parsing ------------------------------------------------------------------

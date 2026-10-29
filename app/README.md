@@ -26,8 +26,13 @@ The window has two steps, top to bottom:
 1. **Flash Pico** — get a `.uf2`, then click **Flash Pico**. Put the Pico in
    BOOTSEL mode (hold the white button while plugging it in) when prompted in
    the log. The app copies the firmware over, waits for the Pico to reboot, and
-   reads back a few telemetry records over serial to confirm it's actually
-   logging data before calling it a pass.
+   reads its serial output up to the first telemetry reading to confirm it's
+   actually logging data before calling it a pass. Firmware 2.1 asks for the time
+   before its first reading, and a production image waits up to three minutes for
+   the drone's Pi to answer, so the app answers from this computer's clock and the
+   check takes about 20 seconds. A Debug image fails the check when its banner
+   (`debug_logN.txt`) is seen, and a pass carries a warning when the reading says
+   the SD card is not working.
 
    Two ways to get the `.uf2`:
 
@@ -90,7 +95,9 @@ internal firmware repo.
 1. The manifest is signed with an Ed25519 key whose public half is compiled into the
    app (`firmware_manifest.SIGNING_PUBLIC_KEY_HEX`). A manifest that fails that check
    is refused outright, and the app says so rather than falling back to it. HTTPS
-   alone would only prove who answered the request, not who wrote the file.
+   alone would only prove who answered the request, not who wrote the file. The
+   key was rotated on 2026-08-12 after the old private half was lost; a list still
+   signed with the old key is refused too, with a message saying that is why.
 2. Every field is validated after the signature passes — a valid signature proves the
    bytes are ours, not that whatever produced them was working. Download URLs must
    point at our own release storage, and versions must be a plain `x.y.z`, which means

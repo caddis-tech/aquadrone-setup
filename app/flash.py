@@ -11,8 +11,10 @@ import shutil
 import string
 import sys
 import time
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import serial
 from serial.tools import list_ports
@@ -20,7 +22,41 @@ from uf2 import HIL_MARKER
 
 BOOTSEL_LABEL = "RPI-RP2"
 BAUD_RATE = 115200
-REQUIRED_KEYS = ("firmware_version", "water_temperature", "ph", "uv_banks")
+
+# Firmware 2.1 and later writes one JSON record per line and says what each one is in
+# "type". Only a reading carries sensor values: the "boot" snapshot written once per
+# run does not, and record kinds added later are not this check's business.
+READING_RECORD_TYPE = "reading"
+
+# The version, and one key per sensor the check has always covered, named as
+# record_json.c in the firmware repo renders them. A reading carries every one, null
+# when a sensor did not answer, so a missing key means a different record format
+# rather than a dead sensor.
+REQUIRED_KEYS = ("firmware_version", "temperature", "ph", "uv_present")
+
+# A record with no "type" is held to what this check required before 2.1, so a board
+# flashed with 1.2.0, which the published list still offers, is judged as it was. No
+# 2.0 build writes parseable JSON to serial, so a 2.0 board never passed and cannot.
+LEGACY_REQUIRED_KEYS = ("firmware_version", "water_temperature", "ph", "uv_banks")
+
+# Before its first record the board asks for the time, and a production image waits
+# up to 180 s for the drone's Pi to answer. No Pi is attached here, so the check
+# answers from this computer's clock. The wire format is boot_time.h's.
+TIME_REQUEST = "TIME?"
+
+# What the board prints when it accepts an answer. A board that printed it and then
+# asked again reset in between; it did not refuse this computer's clock.
+TIME_ACCEPTED = "Boot time synced"
+
+# A Debug image writes the same records as a Release one and is told apart only by
+# the file its banner names, debug_logN.txt rather than dataN.txt. The banner can
+# go by before the port opens, so this catches a Debug image only when it is seen.
+DEBUG_IMAGE_BANNER = "logging to debug_log"
+
+# Serial timeout, per byte when reading and per call when writing. Short, so a quiet
+# port hands control back to the deadline in read_telemetry_lines() every second.
+_PORT_TIMEOUT_S = 1.0
+
 PICO_USB_VID = 0x2E8A  # Raspberry Pi Trading Ltd — same VID whether in BOOTSEL or running firmware
 
 # Firmware artifacts are named for the version inside them (AquaD_Pico_v1.0.3.uf2)
@@ -134,31 +170,63 @@ class LoggingCheckResult:
     firmware_version: str | None
     raw_lines: list[str] = field(default_factory=list)
     error: str | None = None
+    warning: str | None = None
+
+
+def _parse_record(text: str) -> dict[str, Any] | None:
+    """The line as a JSON object, or None for anything else the board prints.
+
+    The banner, the SD card status lines and TIME? share the port with the records,
+    and a line that happens to parse as a bare number is not a record either.
+    """
+    try:
+        record = json.loads(text)
+    # ValueError covers JSONDecodeError and the integer digit limit; a garbled line
+    # of nested brackets raises RecursionError instead.
+    except (ValueError, RecursionError):
+        return None
+    return record if isinstance(record, dict) else None
+
+
+def _required_keys(record: dict[str, Any]) -> tuple[str, ...] | None:
+    """The keys this record must carry, or None for one that holds no readings."""
+    record_type = record.get("type")
+    if record_type is None:
+        return LEGACY_REQUIRED_KEYS
+    if record_type == READING_RECORD_TYPE:
+        return REQUIRED_KEYS
+    return None
+
+
+def _carries_readings(text: str) -> bool:
+    record = _parse_record(text)
+    return record is not None and _required_keys(record) is not None
 
 
 def evaluate_telemetry(raw_lines: list[str]) -> LoggingCheckResult:
     """Decide pass/fail from collected serial lines. Pure (no I/O), so it's
     unit-testable without a physical Pico.
 
-    A pass requires at least one line that parses as JSON AND carries every
-    REQUIRED_KEY. The previous version passed as long as it had collected
-    enough *lines* of any kind, so a Pico spewing boot noise or non-JSON
-    garbage verified as "logging data" with firmware_version=None and a tech
-    could ship a bad flash. A record that parses but is missing keys means the
-    wrong/old firmware is on the board -> hard fail with the offending keys.
+    A pass requires at least one record of readings carrying every key its format
+    requires. The previous version passed as long as it had collected enough
+    *lines* of any kind, so a Pico spewing boot noise or non-JSON garbage verified
+    as "logging data" with firmware_version=None and a tech could ship a bad flash.
+    A record of readings that is missing keys means the wrong firmware is on the
+    board -> hard fail with the offending keys.
     """
     firmware_version = None
-    saw_valid_record = False
+    card_warning = None
+    saw_reading = False
     for text in raw_lines:
-        try:
-            record = json.loads(text)
-        except json.JSONDecodeError:
+        record = _parse_record(text)
+        if record is None:
             continue
         reported = str(record.get("firmware_version") or "")
         if HIL_MARKER in reported:
-            # Checked before the key check because this is the more serious answer,
-            # and because a HIL board satisfies every other check here: valid JSON,
-            # every required key, plausible readings. The suffix is the only tell.
+            # Checked first, and on every kind of record, because this is the more
+            # serious answer and because a HIL board satisfies every other check here:
+            # valid JSON, every required key, plausible readings. The suffix is the
+            # only tell, and the boot snapshot carries it before any reading does.
             return LoggingCheckResult(
                 False, reported, raw_lines,
                 f"Test firmware on this board (firmware_version {reported}). This "
@@ -166,18 +234,66 @@ def evaluate_telemetry(raw_lines: list[str]) -> LoggingCheckResult:
                 "to the card while looking completely healthy. Flash the image with "
                 "no HIL in its filename, then power-cycle the board.",
             )
-        missing = [k for k in REQUIRED_KEYS if k not in record]
+        required = _required_keys(record)
+        if required is None:
+            continue
+        missing = [k for k in required if k not in record]
         if missing:
             return LoggingCheckResult(
                 False, record.get("firmware_version"), raw_lines, f"Record missing keys: {missing}"
             )
         firmware_version = record.get("firmware_version")
-        saw_valid_record = True
-    if not saw_valid_record:
+        card_warning = _card_warning(record)
+        saw_reading = True
+    if not saw_reading:
+        return _no_readings_result(raw_lines)
+    # After the loop, so a HIL board is still reported as one whatever its banner says.
+    if any(DEBUG_IMAGE_BANNER in text for text in raw_lines):
         return LoggingCheckResult(
-            False, None, raw_lines, "No valid telemetry JSON seen — only unparseable serial output"
+            False, firmware_version, raw_lines,
+            "Debug firmware on this board: its banner names debug_logN.txt, not "
+            "dataN.txt. A Debug image waits only 15 s for the drone's Pi to send the "
+            "time, so a drone running it can log a whole run with no dates. Flash the "
+            "Release image, then power-cycle the board.",
         )
-    return LoggingCheckResult(True, firmware_version, raw_lines)
+    return LoggingCheckResult(True, firmware_version, raw_lines, warning=card_warning)
+
+
+def _card_warning(record: dict[str, Any]) -> str | None:
+    """What a 2.1 reading says is wrong with the SD card, or None. Older records do
+    not report the card, so they never warn.
+
+    A warning rather than a failure: 2.1 keeps logging to serial without its card,
+    and a bench flash may have no card in, but a drone must not leave without one.
+    """
+    if (
+        record.get("sd_ready") != 0
+        and not record.get("sd_writes_failed")
+        and not record.get("sd_mounts_failed")
+    ):
+        return None
+    return (
+        f"the board reports SD card trouble (sd_ready {record.get('sd_ready')}, "
+        f"sd_writes_failed {record.get('sd_writes_failed')}, sd_mounts_failed "
+        f"{record.get('sd_mounts_failed')}). Put in an empty, freshly formatted card "
+        "and check again before this board goes on a drone."
+    )
+
+
+def _no_readings_result(raw_lines: list[str]) -> LoggingCheckResult:
+    # A board that took our answer asks once and says it synced. One still asking
+    # without saying so did not accept it, which on a working board means this
+    # computer's clock is outside 2025 to 2100.
+    synced = any(text.startswith(TIME_ACCEPTED) for text in raw_lines)
+    if raw_lines.count(TIME_REQUEST) > 1 and not synced:
+        error = (
+            "The board kept asking for the time (TIME?) and did not accept this "
+            "computer's answer, so it had not started logging. Check this computer's "
+            "date and time, then flash again."
+        )
+    else:
+        error = "No telemetry readings seen, only startup output or lines that are not records"
+    return LoggingCheckResult(False, None, raw_lines, error)
 
 
 # Typing this is what confirms a board is a bench board. A yes/no dialog is one
@@ -221,7 +337,10 @@ def describe_outcome(
     Pure, so the wording of both cases is testable without a Pico.
     """
     if result.ok:
-        return True, f"PASS - Pico is logging data. firmware_version: {result.firmware_version}"
+        message = f"PASS - Pico is logging data. firmware_version: {result.firmware_version}"
+        if result.warning:
+            message += f". WARNING: {result.warning}"
+        return True, message
 
     if flashed_test_firmware and HIL_MARKER in (result.firmware_version or ""):
         return True, (
@@ -233,27 +352,61 @@ def describe_outcome(
     return False, f"FAIL - {result.error}"
 
 
-def verify_logging_data(
-    port: str, lines_to_check: int = 3, timeout_s: float = 40.0
-) -> LoggingCheckResult:
-    """Open the freshly-flashed Pico's serial port, sample a few lines, and
-    confirm it emits valid telemetry JSON (see evaluate_telemetry).
+def time_reply(epoch_s: float) -> bytes:
+    """The answer to TIME?: this computer's clock in whole milliseconds. Pure."""
+    return f"TIME {int(epoch_s * 1000)}\n".encode("ascii")
 
-    The firmware sleeps ~5s at boot (SD card init) before its first record, then
-    emits one record every 5s (POLL_INTERVAL_US in my_project.c) — 3 records needs
-    roughly 5 + 3*5 = 20s worst case; 40s leaves comfortable margin.
+
+def read_telemetry_lines(
+    ser: Any, timeout_s: float, clock: Callable[[], float] = time.time
+) -> Iterator[str]:
+    """Yield each non-empty serial line up to the first record of readings,
+    answering the board's TIME? on the way.
+
+    Takes an already-open port so the answering is testable with a stand-in, the
+    same way evaluate_telemetry() is testable with no Pico.
     """
+    deadline = time.monotonic() + timeout_s
+    fragment = b""
+    while time.monotonic() < deadline:
+        chunk = ser.readline()
+        if not chunk.endswith(b"\n"):
+            # The timeout runs per byte, so a pause mid-line hands back only what has
+            # arrived. Keep it for the rest: either half of a split record is not JSON.
+            fragment += chunk
+            continue
+        text = (fragment + chunk).decode("utf-8", errors="replace").strip()
+        fragment = b""
+        if not text:
+            continue
+        # Yielded before answering, so the log keeps the request if the write fails.
+        yield text
+        if text == TIME_REQUEST:
+            ser.write(time_reply(clock()))
+        elif _carries_readings(text):
+            return
+    if fragment.strip():
+        yield fragment.decode("utf-8", errors="replace").strip()
+
+
+def verify_logging_data(port: str, timeout_s: float = 60.0) -> LoggingCheckResult:
+    """Open the freshly-flashed Pico's serial port, read up to its first reading,
+    and confirm it emits valid telemetry (see evaluate_telemetry).
+
+    With its TIME? answered, 2.1 firmware's first reading comes roughly 10 to 20 s
+    after boot: a 2 s banner delay, a 5 s pause before the SD card, card bring-up,
+    then one measurement cycle, which also writes the boot snapshot. 60 s covers a
+    board that missed the first answer and asks again, or one retrying its card.
+    """
+    # Collected one line at a time rather than with list(), so a port that drops
+    # mid-read still reports what the board said before it went.
     raw_lines: list[str] = []
     try:
-        with serial.Serial(port, BAUD_RATE, timeout=timeout_s) as ser:
-            deadline = time.monotonic() + timeout_s
-            while len(raw_lines) < lines_to_check and time.monotonic() < deadline:
-                raw = ser.readline()
-                if not raw:
-                    continue
-                text = raw.decode("utf-8", errors="replace").strip()
-                if text:
-                    raw_lines.append(text)
+        with serial.Serial(
+            port, BAUD_RATE, timeout=_PORT_TIMEOUT_S, write_timeout=_PORT_TIMEOUT_S
+        ) as ser:
+            for text in read_telemetry_lines(ser, timeout_s):
+                raw_lines.append(text)
     except serial.SerialException as exc:
         return LoggingCheckResult(False, None, raw_lines, f"Serial error: {exc}")
     if not raw_lines:
